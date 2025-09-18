@@ -179,6 +179,29 @@ def get_ab_sf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples=
 
         add_hf_(a, b, hyb)
 
+        if omega != 0:
+            with mol.with_range_coulomb(omega):
+                eri_a_b2a = ao2mo.general(mol, [orbo_b,orbo_b,orbv_a,orbv_a], compact=False)
+                eri_a_a2b = ao2mo.general(mol, [orbo_a,orbo_a,orbv_b,orbv_b], compact=False)
+                eri_b_b2a = ao2mo.general(mol, [orbo_b,orbv_b,orbo_a,orbv_a], compact=False)
+                eri_b_a2b = ao2mo.general(mol, [orbo_a,orbv_a,orbo_b,orbv_b], compact=False)
+
+                eri_a_b2a = eri_a_b2a.reshape(nocc_b,nocc_b,nvir_a,nvir_a)
+                eri_a_a2b = eri_a_a2b.reshape(nocc_a,nocc_a,nvir_b,nvir_b)
+                eri_b_b2a = eri_b_b2a.reshape(nocc_b,nvir_b,nocc_a,nvir_a)
+                eri_b_a2b = eri_b_a2b.reshape(nocc_a,nvir_a,nocc_b,nvir_b)
+
+                k_fac = alpha - hyb
+                a_b2a, a_a2b = a
+                b_b2a, b_a2b = b
+                a_b2a -= np.einsum('ijba->iajb', eri_a_b2a) * k_fac
+                a_a2b -= np.einsum('ijba->iajb', eri_a_a2b) * k_fac
+                b_b2a -= np.einsum('ibja->iajb', eri_b_b2a) * k_fac
+                b_a2b -= np.einsum('ibja->iajb', eri_b_a2b) * k_fac
+
+        if collinear_samples < 0:
+            return a, b
+
         xctype = ni._xc_type(mf.xc)
         mem_now = lib.current_memory()[0]
         max_memory = max(2000, mf.max_memory*.8-mem_now)
@@ -288,6 +311,7 @@ def get_ab_sf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples=
 
 @lib.with_doc(rhf.TDA.__doc__)
 class TDA_SF(TDBase):
+    max_space = getattr(__config__, 'tdscf_rhf_TDA_max_space', 50)
     extype = getattr(__config__, 'tdscf_uhf_sf_SF-TDA_extype', 0)
     collinear_samples = getattr(__config__, 'tdscf_uhf_sf_SF-TDA_collinear_samples', 200)
 

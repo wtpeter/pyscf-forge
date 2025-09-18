@@ -63,31 +63,39 @@ def cache_xc_kernel_sf(self, mol, grids, xc_code, mo_coeff, mo_occ, deriv=2,
     '''Compute the fxc_sf, which can be used in SF-TDDFT/TDA
     '''
     xctype = self._xc_type(xc_code)
-    if xctype == 'GGA':
-        ao_deriv = 1
-    elif xctype == 'MGGA':
-        ao_deriv = 2 if MGGA_DENSITY_LAPL else 1
+    if self.collinear_samples < 0:
+        if xctype == 'LDA':
+            fxc_sf = [None, None, np.zeros((1, 1, len(grids.coords))), np.zeros(((1, 1, 2, 1, len(grids.coords))))]
+        if xctype == 'GGA':
+            fxc_sf = [None, None, np.zeros((4, 4, len(grids.coords))), np.zeros(((4, 4, 2, 4, len(grids.coords))))]
+        if xctype == 'MGGA':
+            fxc_sf = [None, None, np.zeros((5, 5, len(grids.coords))), np.zeros(((5, 5, 2, 5, len(grids.coords))))]
     else:
-        ao_deriv = 0
-    with_lapl = MGGA_DENSITY_LAPL
+        if xctype == 'GGA':
+            ao_deriv = 1
+        elif xctype == 'MGGA':
+            ao_deriv = 2 if MGGA_DENSITY_LAPL else 1
+        else:
+            ao_deriv = 0
+        with_lapl = MGGA_DENSITY_LAPL
 
-    assert mo_coeff[0].ndim == 2
-    assert spin == 1
+        assert mo_coeff[0].ndim == 2
+        assert spin == 1
 
-    nao = mo_coeff[0].shape[0]
-    rhoa = []
-    rhob = []
+        nao = mo_coeff[0].shape[0]
+        rhoa = []
+        rhob = []
 
-    ni = numint.NumInt()
-    for ao, mask, weight, coords \
-            in self.block_loop(mol, grids, nao, ao_deriv, max_memory=max_memory):
-        rhoa.append(ni.eval_rho2(mol, ao, mo_coeff[0], mo_occ[0], mask, xctype, with_lapl))
-        rhob.append(ni.eval_rho2(mol, ao, mo_coeff[1], mo_occ[1], mask, xctype, with_lapl))
-    rho_ab = (np.hstack(rhoa), np.hstack(rhob))
-    rho_ab = np.asarray(rho_ab)
-    rho_tmz = np.zeros_like(rho_ab)
-    rho_tmz[0] += rho_ab[0]+rho_ab[1]
-    rho_tmz[1] += rho_ab[0]-rho_ab[1]
-    eval_xc = mcfun_eval_xc_adapter_sf(self,xc_code)
-    fxc_sf = eval_xc(xc_code, rho_tmz, deriv=deriv, xctype=xctype)
+        ni = numint.NumInt()
+        for ao, mask, weight, coords \
+                in self.block_loop(mol, grids, nao, ao_deriv, max_memory=max_memory):
+            rhoa.append(ni.eval_rho2(mol, ao, mo_coeff[0], mo_occ[0], mask, xctype, with_lapl))
+            rhob.append(ni.eval_rho2(mol, ao, mo_coeff[1], mo_occ[1], mask, xctype, with_lapl))
+        rho_ab = (np.hstack(rhoa), np.hstack(rhob))
+        rho_ab = np.asarray(rho_ab)
+        rho_tmz = np.zeros_like(rho_ab)
+        rho_tmz[0] += rho_ab[0]+rho_ab[1]
+        rho_tmz[1] += rho_ab[0]-rho_ab[1]
+        eval_xc = mcfun_eval_xc_adapter_sf(self,xc_code)
+        fxc_sf = eval_xc(xc_code, rho_tmz, deriv=deriv, xctype=xctype)
     return fxc_sf

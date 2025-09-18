@@ -143,7 +143,7 @@ class CasidaTDDFT(TDA_SF):
 
         def pickeig(w, v, nroots, envs):
             realidx = numpy.where((abs(w.imag) < 1e-4) &
-                                  (w.real > -1e-3))[0]
+                                  (w.real > self.positive_eig_threshold))[0]
             return lib.linalg_helper._eigs_cmplx2real(w, v, realidx,
                                                       real_eigenvectors=True)
 
@@ -213,4 +213,6 @@ def tddft(mf):
 from pyscf import dft
 dft.uks.UKS.TDA_SF   = lib.class_as_method(TDA_SF)
 dft.uks.UKS.TDDFT_SF = lib.class_as_method(TDDFT_SF)
-dft.uks.UKS.TDDFT_SF = tddft
+dft.uks_symm.UKS.TDA_SF   = lib.class_as_method(TDA_SF)
+dft.uks_symm.UKS.TDDFT_SF = lib.class_as_method(TDDFT_SF)
+# dft.uks.UKS.TDDFT_SF = tddft

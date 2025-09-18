@@ -598,6 +598,8 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
 
                 mgga_sum_(v1ao[0], ao, wv[0], mask)
                 mgga_sum_(v1ao[1], ao, wv[1], mask)
+    elif xctype == 'HF':
+        pass
 
     else:
         raise NotImplementedError(f'td-uks for functional {xc_code}')
@@ -809,6 +811,8 @@ def _contract_xc_kernel_z(td_grad, xc_code, dmvo, max_memory=2000):
     return f1vo
 
 class Gradients(tdrhf_grad.Gradients):
+    cphf_max_cycle = tdrhf_grad.Gradients.cphf_max_cycle + 20
+
     @lib.with_doc(grad_elec.__doc__)
     def grad_elec(self, xy, singlet=None, atmlst=None):
         return grad_elec(self, xy, atmlst, self.max_memory, self.verbose)

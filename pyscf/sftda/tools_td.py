@@ -17,6 +17,7 @@ import numpy
 from functools import reduce
 from pyscf import lib
 from pyscf.scf.uhf import spin_square as spin_square_scf
+from pyscf.data.nist import HARTREE2EV
 
 def spin_square(mf,xy,extype=0,tdtype='TDDFT'):
     r'''calculator of <S^2> of excited states using tddft/tda.
@@ -147,7 +148,7 @@ def transition_analyze(scfobj, tdobj, extd, xy, tdtype='TDA'):
     elif tdobj.extype== 1:
         nvir = nvirb
 
-    print('Excited energy '+ ': '+ str(extd*27.21138386) + ' eV.')
+    print('Excited energy '+ ': '+ str(extd*HARTREE2EV) + ' eV.')
 
     ss2 = spin_square(scfobj,xy,extype=tdobj.extype,tdtype=tdtype)
     print('<S2> value ' + ': ' +str(ss2) + '.')
@@ -170,3 +171,29 @@ def transition_analyze(scfobj, tdobj, extd, xy, tdtype='TDA'):
     print('The main and second norm to orbital pair:')
     print(a_i_mo_idx,a_i_mo_idx2)
     print('\n')
+
+def extract_state(mf, mftd, tdtype='TDDFT', Smin=0.0, Smax=0.7):
+    oa = mf.mol.nelec[0]
+    nvir = mf.mol.nao_nr() - mf.mol.nelec[1]
+    S = []
+    j = 0
+
+    for i in range(min(20, len(mftd.xy))):
+        xy = mftd.xy[i]
+        s2 = spin_square(mf, mftd.xy[i], extype=1, tdtype=tdtype)
+        x = xy[0][1].flatten()
+        norm = x.conj() * x
+        idx_mo = numpy.argsort(norm)
+        idx_u = idx_mo[-1]
+        idx_u2 = idx_mo[-2]
+
+        a_i_mo_idx = (idx_u//nvir+1, idx_u%nvir+1)
+        a_i_mo_idx2 =(idx_u2//nvir+1, idx_u2%nvir+1)
+
+        if Smin <= s2 <= Smax:
+            j += 1
+            print(f'{i}-th state with excitation energy = {mftd.e[i]*HARTREE2EV:.4f} eV,', end=' ')
+            print(f'S^2 = {s2:.4f}', end=' ')
+            print(f'Norms: {norm[idx_u]:.3f}@{a_i_mo_idx}, {norm[idx_u2]:.3f}@{a_i_mo_idx2}')
+            S.append(i)
+    return S
