@@ -59,7 +59,10 @@ def _gen_uhf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, extype=0, coll
 
     def vind(dm1):
         in2 = numint.NumInt()
-        v1 = nr_uks_fxc_sf(in2,mol, mf.grids, mf.xc, dm0, dm1, 0, hermi,
+        if collinear_samples < 0:
+            v1 = numpy.zeros((4, dm1.shape[1], dm1.shape[2], dm1.shape[3]))
+        else:
+            v1 = nr_uks_fxc_sf(in2,mol, mf.grids, mf.xc, dm0, dm1, 0, hermi,
                                None, None, fxc, extype=extype,max_memory=max_memory)
         if not hybrid:
             # No with_j because = 0 in spin flip part.
@@ -114,7 +117,10 @@ def _gen_uhf_tda_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, collinear_
 
     def vind(dm1):
         in2 = numint.NumInt()
-        v1 = nr_uks_fxc_sf_tda(in2,mol, mf.grids, mf.xc, dm0, dm1, 0, hermi,
+        if collinear_samples < 0:
+            v1 = numpy.zeros((dm1.shape[0], dm1.shape[1], dm1.shape[2]))
+        else:
+            v1 = nr_uks_fxc_sf_tda(in2,mol, mf.grids, mf.xc, dm0, dm1, 0, hermi,
                                None, None, fxc, max_memory=max_memory)
         if not hybrid:
             # No with_j because = 0 in spin flip part.

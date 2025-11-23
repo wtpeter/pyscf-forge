@@ -22,13 +22,83 @@ from pyscf import ao2mo
 from pyscf.lib import logger
 from pyscf.tdscf import rhf
 from pyscf import __config__
+from pyscf import symm
+from pyscf.data import nist
+from pyscf.sftda import uks_sf
 
 # import function
 from pyscf.sftda.scf_genrep_sftd import _gen_uhf_tda_response_sf
 from pyscf.sftda.numint2c_sftd import cache_xc_kernel_sf
+from pyscf.sftda.tools_td import spin_square
 
 # import class
 from pyscf.tdscf.uhf import TDBase
+from pyscf.scf import uhf_symm
+
+MO_BASE = getattr(__config__, 'MO_BASE', 1)
+
+def _analyze_wfnsym(tdobj, x_sym, x):
+    '''
+    Guess the excitation symmetry of TDDFT X amplitude.
+    Return a label.
+    x_sym and x are of the same shape.'''
+    possible_sym = x_sym[(x > 0.1) | (x < -0.1)]
+    wfnsym = symm.MULTI_IRREPS
+    ids = possible_sym[possible_sym != symm.MULTI_IRREPS]
+    if len(ids) > 0 and all(ids == ids[0]):
+        wfnsym = ids[0]
+    if wfnsym == symm.MULTI_IRREPS:
+        wfnsym_label = '???'
+    else:
+        wfnsym_label = symm.irrep_id2name(tdobj.mol.groupname, wfnsym)
+    return wfnsym, wfnsym_label
+
+def analyze(tdobj, verbose=None):
+    log = logger.new_logger(tdobj, verbose)
+    mol = tdobj.mol
+    maska, maskb = tdobj.get_frozen_mask()
+    mo_coeff = (tdobj._scf.mo_coeff[0][:, maska], tdobj._scf.mo_coeff[1][:, maskb])
+    mo_occ = (tdobj._scf.mo_occ[0][maska], tdobj._scf.mo_occ[1][maskb])
+    nocc_a = np.count_nonzero(mo_occ[0] == 1)
+    nocc_b = np.count_nonzero(mo_occ[1] == 1)
+
+    if mol.symmetry:
+        orbsyma, orbsymb = uhf_symm.get_orbsym(mol, mo_coeff)
+        x_symab = symm.direct_prod(orbsyma[mo_occ[0]==1], orbsymb[mo_occ[1]==0], mol.groupname)
+        x_symba = symm.direct_prod(orbsymb[mo_occ[1]==1], orbsyma[mo_occ[0]==0], mol.groupname)
+    else:
+        x_symab = x_symba = None
+    for i, ei in enumerate(tdobj.e):
+        x, y = tdobj.xy[i]
+        if tdobj.extype==0:
+            x_sym = x_symba
+            x = x[0]
+        elif tdobj.extype==1:
+            x_sym = x_symab
+            x = x[1]
+        tdtype = 'TDDFT' if isinstance(tdobj, uks_sf.TDDFT_SF) else 'TDA'
+        S2 = spin_square(tdobj._scf, tdobj.xy[i], tdobj.extype, tdtype)
+        e_ev = np.asarray(tdobj.e) * nist.HARTREE2EV
+        if x_symab is None:
+            log.note('Excited State %3d: %12.5f eV   <S^2>: %6.4f', i+1, e_ev[i], S2)
+        else:
+            wfnsymid, wfnsymlabel = _analyze_wfnsym(tdobj, x_sym, x)
+            refsym = tdobj._scf.get_wfnsym()
+            statesymid = wfnsymid ^ refsym
+            if refsym == symm.MULTI_IRREPS or wfnsymid == symm.MULTI_IRREPS:
+                statesymlabel = '???'
+            else:
+                statesymlabel = symm.irrep_id2name(mol.groupname, statesymid)
+            log.note('Excited State %3d: %4s (State: %4s) %12.5f eV   <S^2>: %6.4f',
+                     i+1, wfnsymlabel, statesymlabel, e_ev[i], S2)
+        
+        if log.verbose >= logger.INFO:
+            if tdobj.extype==0:
+                for o, v in zip(* np.where(abs(x) > 0.1)):
+                    log.info('    %4db -> %4da %12.5f', o+MO_BASE, v+MO_BASE+nocc_a, x[o,v])
+            elif tdobj.extype==1:
+                for o, v in zip(* np.where(abs(x) > 0.1)):
+                    log.info('    %4da -> %4db %12.5f', o+MO_BASE, v+MO_BASE+nocc_b, x[o,v])
 
 def gen_tda_operation_sf(mf, fock_ao=None, wfnsym=None,extype=0,collinear_samples=200):
     '''A x for spin flip TDDFT case.
@@ -132,11 +202,27 @@ def get_ab_sf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples=
     nocc_b = orbo_b.shape[1]
     nvir_b = orbv_b.shape[1]
 
-    e_ia_b2a = (mo_energy[0][viridx_a,None] - mo_energy[1][occidx_b]).T
-    e_ia_a2b = (mo_energy[1][viridx_b,None] - mo_energy[0][occidx_a]).T
+    if np.allclose(mf.mo_coeff[0], mf.mo_coeff[1]):
+        logger.info(mf, 'Restricted open-shell detected.')
+        fock_ao_a, fock_ao_b = mf.get_fock()
+        fock_oo_a = orbo_a.T @ fock_ao_a @ orbo_a
+        fock_vv_a = orbv_a.T @ fock_ao_a @ orbv_a
+        fock_oo_b = orbo_b.T @ fock_ao_b @ orbo_b
+        fock_vv_b = orbv_b.T @ fock_ao_b @ orbv_b
 
-    a_b2a = np.diag(e_ia_b2a.ravel()).reshape(nocc_b,nvir_a,nocc_b,nvir_a)
-    a_a2b = np.diag(e_ia_a2b.ravel()).reshape(nocc_a,nvir_b,nocc_a,nvir_b)
+        a_b2a = np.zeros((nocc_b,nvir_a,nocc_b,nvir_a))
+        a_a2b = np.zeros((nocc_a,nvir_b,nocc_a,nvir_b))
+        a_b2a += np.einsum('ik,ab->iakb', np.eye(nocc_b), fock_vv_a)
+        a_b2a -= np.einsum('ac,ik->iakc', np.eye(nvir_a), fock_oo_b.T)
+        a_a2b += np.einsum('ik,ab->iakb', np.eye(nocc_a), fock_vv_b)
+        a_a2b -= np.einsum('ac,ik->iakc', np.eye(nvir_b), fock_oo_a.T)
+
+    else:
+        e_ia_b2a = (mo_energy[0][viridx_a,None] - mo_energy[1][occidx_b]).T
+        e_ia_a2b = (mo_energy[1][viridx_b,None] - mo_energy[0][occidx_a]).T
+
+        a_b2a = np.diag(e_ia_b2a.ravel()).reshape(nocc_b,nvir_a,nocc_b,nvir_a)
+        a_a2b = np.diag(e_ia_a2b.ravel()).reshape(nocc_a,nvir_b,nocc_a,nvir_b)
     b_b2a = np.zeros((nocc_b,nvir_a,nocc_a,nvir_b))
     b_a2b = np.zeros((nocc_a,nvir_b,nocc_b,nvir_a))
     a = (a_b2a, a_a2b)
@@ -490,12 +576,16 @@ class TDA_SF(TDBase):
         return self.e, self.xy
 
     # this function should be moved into uhf.py
-    def get_ab_sf(self, mf=None, collinear_samples=200):
+    def get_ab_sf(self, mf=None, collinear_samples=None):
         if mf is None: mf = self._scf
+        if collinear_samples is None:
+            collinear_samples = self.collinear_samples
         return get_ab_sf(mf, collinear_samples=collinear_samples)
 
     def nuc_grad_method(self):
         from pyscf.grad import tduks_sf
         return tduks_sf.Gradients(self)
+
+    analyze = analyze
 
 scf.uhf.UHF.TDA_SF = lib.class_as_method(TDA_SF)

@@ -90,8 +90,8 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
         omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mol.spin)
 
         # used by mcfun.
-        rho0, vxc, fxc = ni.cache_xc_kernel(mf.mol, mf.grids, mf.xc,
-                                        mo_coeff, mo_occ, spin=1)
+        # rho0, vxc, fxc = ni.cache_xc_kernel(mf.mol, mf.grids, mf.xc,
+        #                                 mo_coeff, mo_occ, spin=1)
 
         f1vo, f1oo, vxc1, k1ao = \
                 _contract_xc_kernel(td_grad, mf.xc, ((dmxpy_ab,dmxpy_ba),(dmxmy_ab,dmxmy_ba)),
@@ -404,35 +404,36 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
                 in ni.block_loop(mol, grids, nao, ao_deriv, max_memory):
             p0 = p1
             p1+= weight.shape[0]
-            s_s = fxc_sf[...,p0:p1] * weight
+            if td_grad.base.collinear_samples > 0:
+                s_s = fxc_sf[...,p0:p1] * weight
 
-            rho1_ab = ni.eval_rho(mol, ao[0], dmvo[0][0], mask, xctype)
-            rho1_ba = ni.eval_rho(mol, ao[0], dmvo[0][1], mask, xctype)
-            # s_s*2 because of \sigma_x \sigma_x + \sigma_y \sigma_y
-            lda_sum_(f1vo[0][1], ao, (rho1_ab+rho1_ba)*s_s*2, mask)
-            lda_sum_(f1vo[0][0], ao, (rho1_ba+rho1_ab)*s_s*2, mask)
+                rho1_ab = ni.eval_rho(mol, ao[0], dmvo[0][0], mask, xctype)
+                rho1_ba = ni.eval_rho(mol, ao[0], dmvo[0][1], mask, xctype)
+                # s_s*2 because of \sigma_x \sigma_x + \sigma_y \sigma_y
+                lda_sum_(f1vo[0][1], ao, (rho1_ab+rho1_ba)*s_s*2, mask)
+                lda_sum_(f1vo[0][0], ao, (rho1_ba+rho1_ab)*s_s*2, mask)
 
-            if with_kxc:
-                s_s_n = kxc_sf[:,:,0][...,p0:p1] * weight
-                s_s_s = kxc_sf[:,:,1][...,p0:p1] * weight
-                lda_sum_(k1ao_xpy[0][0], ao, s_s_n*2*rho1_ab*(rho1_ab+rho1_ba), mask)
-                lda_sum_(k1ao_xpy[0][1], ao, s_s_n*2*rho1_ba*(rho1_ba+rho1_ab), mask)
-                lda_sum_(k1ao_xpy[1][0], ao, s_s_s*2*rho1_ab*(rho1_ab+rho1_ba), mask)
-                lda_sum_(k1ao_xpy[1][1], ao, s_s_s*2*rho1_ba*(rho1_ba+rho1_ab), mask)
+                if with_kxc:
+                    s_s_n = kxc_sf[:,:,0][...,p0:p1] * weight
+                    s_s_s = kxc_sf[:,:,1][...,p0:p1] * weight
+                    lda_sum_(k1ao_xpy[0][0], ao, s_s_n*2*rho1_ab*(rho1_ab+rho1_ba), mask)
+                    lda_sum_(k1ao_xpy[0][1], ao, s_s_n*2*rho1_ba*(rho1_ba+rho1_ab), mask)
+                    lda_sum_(k1ao_xpy[1][0], ao, s_s_s*2*rho1_ab*(rho1_ab+rho1_ba), mask)
+                    lda_sum_(k1ao_xpy[1][1], ao, s_s_s*2*rho1_ba*(rho1_ba+rho1_ab), mask)
 
-            rho1_ab = ni.eval_rho(mol, ao[0], dmvo[1][0], mask, xctype)
-            rho1_ba = ni.eval_rho(mol, ao[0], dmvo[1][1], mask, xctype)
+                rho1_ab = ni.eval_rho(mol, ao[0], dmvo[1][0], mask, xctype)
+                rho1_ba = ni.eval_rho(mol, ao[0], dmvo[1][1], mask, xctype)
 
-            # py attention to the order of f1vo[1][1] and f1vo[1][0]
-            lda_sum_(f1vo[1][1], ao, (rho1_ab-rho1_ba)*s_s*2, mask)
-            lda_sum_(f1vo[1][0], ao, (rho1_ba-rho1_ab)*s_s*2, mask)
+                # py attention to the order of f1vo[1][1] and f1vo[1][0]
+                lda_sum_(f1vo[1][1], ao, (rho1_ab-rho1_ba)*s_s*2, mask)
+                lda_sum_(f1vo[1][0], ao, (rho1_ba-rho1_ab)*s_s*2, mask)
 
-            if with_kxc:
-                # Note the "-"
-                lda_sum_(k1ao_xmy[0][0], ao, s_s_n*2*rho1_ab*(rho1_ab-rho1_ba), mask)
-                lda_sum_(k1ao_xmy[0][1], ao, s_s_n*2*rho1_ba*(rho1_ba-rho1_ab), mask)
-                lda_sum_(k1ao_xmy[1][0], ao, s_s_s*2*rho1_ab*(rho1_ab-rho1_ba), mask)
-                lda_sum_(k1ao_xmy[1][1], ao, s_s_s*2*rho1_ba*(rho1_ba-rho1_ab), mask)
+                if with_kxc:
+                    # Note the "-"
+                    lda_sum_(k1ao_xmy[0][0], ao, s_s_n*2*rho1_ab*(rho1_ab-rho1_ba), mask)
+                    lda_sum_(k1ao_xmy[0][1], ao, s_s_n*2*rho1_ba*(rho1_ba-rho1_ab), mask)
+                    lda_sum_(k1ao_xmy[1][0], ao, s_s_s*2*rho1_ab*(rho1_ab-rho1_ba), mask)
+                    lda_sum_(k1ao_xmy[1][1], ao, s_s_s*2*rho1_ba*(rho1_ba-rho1_ab), mask)
 
             rho = (ni.eval_rho2(mol, ao[0], mo_coeff[0], mo_occ[0], mask, xctype),
                    ni.eval_rho2(mol, ao[0], mo_coeff[1], mo_occ[1], mask, xctype))
@@ -461,33 +462,34 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
             p0 = p1
             p1+= weight.shape[0]
 
-            rho1_ab = ni.eval_rho(mol, ao, dmvo[0][0], mask, xctype)
-            rho1_ba = ni.eval_rho(mol, ao, dmvo[0][1], mask, xctype)
+            if td_grad.base.collinear_samples > 0:
+                rho1_ab = ni.eval_rho(mol, ao, dmvo[0][0], mask, xctype)
+                rho1_ba = ni.eval_rho(mol, ao, dmvo[0][1], mask, xctype)
 
-            wv_sf = uks_sf_gga_wv1((rho1_ab,rho1_ba),fxc_sf[...,p0:p1],weight)
-            gga_sum_(f1vo[0][1], ao, wv_sf[0]+wv_sf[1], mask)
-            gga_sum_(f1vo[0][0], ao, wv_sf[1]+wv_sf[0], mask)
+                wv_sf = uks_sf_gga_wv1((rho1_ab,rho1_ba),fxc_sf[...,p0:p1],weight)
+                gga_sum_(f1vo[0][1], ao, wv_sf[0]+wv_sf[1], mask)
+                gga_sum_(f1vo[0][0], ao, wv_sf[1]+wv_sf[0], mask)
 
-            if with_kxc:
-                gv_sf = uks_sf_gga_wv2_p((rho1_ab,rho1_ba),kxc_sf[...,p0:p1],weight)
-                gga_sum_(k1ao_xpy[0][0], ao, gv_sf[0][0], mask)
-                gga_sum_(k1ao_xpy[0][1], ao, gv_sf[1][0], mask)
-                gga_sum_(k1ao_xpy[1][0], ao, gv_sf[0][1], mask)
-                gga_sum_(k1ao_xpy[1][1], ao, gv_sf[1][1], mask)
+                if with_kxc:
+                    gv_sf = uks_sf_gga_wv2_p((rho1_ab,rho1_ba),kxc_sf[...,p0:p1],weight)
+                    gga_sum_(k1ao_xpy[0][0], ao, gv_sf[0][0], mask)
+                    gga_sum_(k1ao_xpy[0][1], ao, gv_sf[1][0], mask)
+                    gga_sum_(k1ao_xpy[1][0], ao, gv_sf[0][1], mask)
+                    gga_sum_(k1ao_xpy[1][1], ao, gv_sf[1][1], mask)
 
-            rho1_ab = ni.eval_rho(mol, ao, dmvo[1][0], mask, xctype)
-            rho1_ba = ni.eval_rho(mol, ao, dmvo[1][1], mask, xctype)
+                rho1_ab = ni.eval_rho(mol, ao, dmvo[1][0], mask, xctype)
+                rho1_ba = ni.eval_rho(mol, ao, dmvo[1][1], mask, xctype)
 
-            wv_sf = uks_sf_gga_wv1((rho1_ab,rho1_ba),fxc_sf[...,p0:p1],weight)
-            gga_sum_(f1vo[1][1], ao, wv_sf[0]-wv_sf[1], mask)
-            gga_sum_(f1vo[1][0], ao, wv_sf[1]-wv_sf[0], mask)
+                wv_sf = uks_sf_gga_wv1((rho1_ab,rho1_ba),fxc_sf[...,p0:p1],weight)
+                gga_sum_(f1vo[1][1], ao, wv_sf[0]-wv_sf[1], mask)
+                gga_sum_(f1vo[1][0], ao, wv_sf[1]-wv_sf[0], mask)
 
-            if with_kxc:
-                gv_sf = uks_sf_gga_wv2_m((rho1_ab,rho1_ba),kxc_sf[...,p0:p1],weight)
-                gga_sum_(k1ao_xmy[0][0], ao, gv_sf[0][0], mask)
-                gga_sum_(k1ao_xmy[0][1], ao, gv_sf[1][0], mask)
-                gga_sum_(k1ao_xmy[1][0], ao, gv_sf[0][1], mask)
-                gga_sum_(k1ao_xmy[1][1], ao, gv_sf[1][1], mask)
+                if with_kxc:
+                    gv_sf = uks_sf_gga_wv2_m((rho1_ab,rho1_ba),kxc_sf[...,p0:p1],weight)
+                    gga_sum_(k1ao_xmy[0][0], ao, gv_sf[0][0], mask)
+                    gga_sum_(k1ao_xmy[0][1], ao, gv_sf[1][0], mask)
+                    gga_sum_(k1ao_xmy[1][0], ao, gv_sf[0][1], mask)
+                    gga_sum_(k1ao_xmy[1][1], ao, gv_sf[1][1], mask)
 
             rho = (ni.eval_rho2(mol, ao, mo_coeff[0], mo_occ[0], mask, xctype),
                    ni.eval_rho2(mol, ao, mo_coeff[1], mo_occ[1], mask, xctype))
@@ -527,47 +529,48 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
             p1+= weight.shape[0]
             ngrid=weight.shape[-1]
 
-            rho1_ab_tmp = ni.eval_rho(mol, ao, dmvo[0][0], mask, xctype)
-            rho1_ba_tmp = ni.eval_rho(mol, ao, dmvo[0][1], mask, xctype)
-            # Padding for laplacian
-            rho1_ab = np.empty((5, ngrid))
-            rho1_ba = np.empty((5, ngrid))
-            rho1_ab[:4] = rho1_ab_tmp[:4]
-            rho1_ba[:4] = rho1_ba_tmp[:4]
-            rho1_ab[4] = rho1_ab_tmp[5]
-            rho1_ba[4] = rho1_ba_tmp[5]
+            if td_grad.base.collinear_samples > 0:
+                rho1_ab_tmp = ni.eval_rho(mol, ao, dmvo[0][0], mask, xctype)
+                rho1_ba_tmp = ni.eval_rho(mol, ao, dmvo[0][1], mask, xctype)
+                # Padding for laplacian
+                rho1_ab = np.empty((5, ngrid))
+                rho1_ba = np.empty((5, ngrid))
+                rho1_ab[:4] = rho1_ab_tmp[:4]
+                rho1_ba[:4] = rho1_ba_tmp[:4]
+                rho1_ab[4] = rho1_ab_tmp[5]
+                rho1_ba[4] = rho1_ba_tmp[5]
 
-            wv_sf = uks_sf_mgga_wv1((rho1_ab,rho1_ba), fxc_sf[...,p0:p1],weight)
-            mgga_sum_(f1vo[0][1], ao, wv_sf[0]+wv_sf[1], mask)
-            mgga_sum_(f1vo[0][0], ao, wv_sf[1]+wv_sf[0], mask)
+                wv_sf = uks_sf_mgga_wv1((rho1_ab,rho1_ba), fxc_sf[...,p0:p1],weight)
+                mgga_sum_(f1vo[0][1], ao, wv_sf[0]+wv_sf[1], mask)
+                mgga_sum_(f1vo[0][0], ao, wv_sf[1]+wv_sf[0], mask)
 
-            if with_kxc:
-                gv_sf = uks_sf_mgga_wv2_p((rho1_ab,rho1_ba), kxc_sf[...,p0:p1], weight)
-                mgga_sum_(k1ao_xpy[0][0], ao, gv_sf[0][0], mask)
-                mgga_sum_(k1ao_xpy[0][1], ao, gv_sf[1][0], mask)
-                mgga_sum_(k1ao_xpy[1][0], ao, gv_sf[0][1], mask)
-                mgga_sum_(k1ao_xpy[1][1], ao, gv_sf[1][1], mask)
+                if with_kxc:
+                    gv_sf = uks_sf_mgga_wv2_p((rho1_ab,rho1_ba), kxc_sf[...,p0:p1], weight)
+                    mgga_sum_(k1ao_xpy[0][0], ao, gv_sf[0][0], mask)
+                    mgga_sum_(k1ao_xpy[0][1], ao, gv_sf[1][0], mask)
+                    mgga_sum_(k1ao_xpy[1][0], ao, gv_sf[0][1], mask)
+                    mgga_sum_(k1ao_xpy[1][1], ao, gv_sf[1][1], mask)
 
-            rho1_ab_tmp = ni.eval_rho(mol, ao, dmvo[1][0], mask, xctype)
-            rho1_ba_tmp = ni.eval_rho(mol, ao, dmvo[1][1], mask, xctype)
-            # Padding for laplacian
-            rho1_ab = np.empty((5, ngrid))
-            rho1_ba = np.empty((5, ngrid))
-            rho1_ab[:4] = rho1_ab_tmp[:4]
-            rho1_ba[:4] = rho1_ba_tmp[:4]
-            rho1_ab[4] = rho1_ab_tmp[5]
-            rho1_ba[4] = rho1_ba_tmp[5]
+                rho1_ab_tmp = ni.eval_rho(mol, ao, dmvo[1][0], mask, xctype)
+                rho1_ba_tmp = ni.eval_rho(mol, ao, dmvo[1][1], mask, xctype)
+                # Padding for laplacian
+                rho1_ab = np.empty((5, ngrid))
+                rho1_ba = np.empty((5, ngrid))
+                rho1_ab[:4] = rho1_ab_tmp[:4]
+                rho1_ba[:4] = rho1_ba_tmp[:4]
+                rho1_ab[4] = rho1_ab_tmp[5]
+                rho1_ba[4] = rho1_ba_tmp[5]
 
-            wv_sf = uks_sf_mgga_wv1((rho1_ab,rho1_ba), fxc_sf[...,p0:p1],weight)
-            mgga_sum_(f1vo[1][1], ao, wv_sf[0]-wv_sf[1], mask)
-            mgga_sum_(f1vo[1][0], ao, wv_sf[1]-wv_sf[0], mask)
+                wv_sf = uks_sf_mgga_wv1((rho1_ab,rho1_ba), fxc_sf[...,p0:p1],weight)
+                mgga_sum_(f1vo[1][1], ao, wv_sf[0]-wv_sf[1], mask)
+                mgga_sum_(f1vo[1][0], ao, wv_sf[1]-wv_sf[0], mask)
 
-            if with_kxc:
-                gv_sf = uks_sf_mgga_wv2_m((rho1_ab,rho1_ba), kxc_sf[...,p0:p1], weight)
-                mgga_sum_(k1ao_xmy[0][0], ao, gv_sf[0][0], mask)
-                mgga_sum_(k1ao_xmy[0][1], ao, gv_sf[1][0], mask)
-                mgga_sum_(k1ao_xmy[1][0], ao, gv_sf[0][1], mask)
-                mgga_sum_(k1ao_xmy[1][1], ao, gv_sf[1][1], mask)
+                if with_kxc:
+                    gv_sf = uks_sf_mgga_wv2_m((rho1_ab,rho1_ba), kxc_sf[...,p0:p1], weight)
+                    mgga_sum_(k1ao_xmy[0][0], ao, gv_sf[0][0], mask)
+                    mgga_sum_(k1ao_xmy[0][1], ao, gv_sf[1][0], mask)
+                    mgga_sum_(k1ao_xmy[1][0], ao, gv_sf[0][1], mask)
+                    mgga_sum_(k1ao_xmy[1][1], ao, gv_sf[1][1], mask)
 
             rho = (ni.eval_rho2(mol, ao, mo_coeff[0], mo_occ[0], mask, xctype),
                    ni.eval_rho2(mol, ao, mo_coeff[1], mo_occ[1], mask, xctype))
