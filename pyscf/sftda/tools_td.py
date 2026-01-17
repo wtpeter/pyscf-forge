@@ -15,8 +15,10 @@
 
 import numpy
 from functools import reduce
-from pyscf import lib
+from pyscf import lib, scf, dft
 from pyscf.scf.uhf import spin_square as spin_square_scf
+from pyscf.data.nist import HARTREE2EV
+from pyscf.lib import logger
 
 def spin_square(mf,xy,extype=0,tdtype='TDDFT'):
     r'''calculator of <S^2> of excited states using tddft/tda.
@@ -39,6 +41,11 @@ def spin_square(mf,xy,extype=0,tdtype='TDDFT'):
         ssI :
             The expectation value of S^2.
     '''
+    if isinstance(mf, scf.rohf.ROHF):
+        if isinstance(mf, dft.KohnShamDFT):
+            mf = mf.to_uks()
+        else:
+            mf = mf.to_uhf()
     mo = mf.mo_coeff
     mo_occ = mf.mo_occ
     occidxa = numpy.where(mo_occ[0]>0)[0]
@@ -135,6 +142,11 @@ def spin_square(mf,xy,extype=0,tdtype='TDDFT'):
     return ssI
 
 def transition_analyze(scfobj, tdobj, extd, xy, tdtype='TDA'):
+    if isinstance(scfobj, scf.rohf.ROHF):
+        if isinstance(scfobj, dft.KohnShamDFT):
+            scfobj = scfobj.to_uks()
+        else:
+            scfobj = scfobj.to_uhf()
     nmo = scfobj.mol.nao
     nocca = scfobj.mo_occ[0].sum()
     noccb = scfobj.mo_occ[1].sum()
@@ -147,10 +159,8 @@ def transition_analyze(scfobj, tdobj, extd, xy, tdtype='TDA'):
     elif tdobj.extype== 1:
         nvir = nvirb
 
-    print('Excited energy '+ ': '+ str(extd*27.21138386) + ' eV.')
-
     ss2 = spin_square(scfobj,xy,extype=tdobj.extype,tdtype=tdtype)
-    print('<S2> value ' + ': ' +str(ss2) + '.')
+    output = f'Excited energy :{extd*HARTREE2EV:.6f} eV,  <S2> value : {ss2:.4f}\n'
 
     if tdobj.extype == 0:
         x=xy[0][0].flatten()
@@ -158,15 +168,48 @@ def transition_analyze(scfobj, tdobj, extd, xy, tdtype='TDA'):
         x=xy[0][1].flatten()
 
     norm = x.conj()* x
-    idx_u = numpy.argmax(norm)
     idx_mo = numpy.argsort(norm)
+    idx_u = idx_mo[-1]
     idx_u2 = idx_mo[-2]
 
-    a_i_mo_idx = (idx_u//nvir+1,idx_u%nvir+1)
-    a_i_mo_idx2 =(idx_u2//nvir+1,idx_u2%nvir+1)
+    a_i_mo_idx = (idx_u//nvir+1, idx_u%nvir+1)
+    a_i_mo_idx2 =(idx_u2//nvir+1, idx_u2%nvir+1)
 
-    print('The main and second norm:')
-    print(norm[idx_mo[-1]],norm[idx_mo[-2]])
-    print('The main and second norm to orbital pair:')
-    print(a_i_mo_idx,a_i_mo_idx2)
-    print('\n')
+    output += f'Norms: {norm[idx_u]:.3f}@{a_i_mo_idx}, {norm[idx_u2]:.3f}@{a_i_mo_idx2}\n'
+
+    return output
+
+def extract_state(mf, mftd, tdtype='TDDFT', Smin=0.0, Smax=0.7, verbose=None):
+    if verbose is None:
+        verbose = mf.verbose
+    log = logger.new_logger(mftd, verbose=verbose)
+    if isinstance(mf, scf.rohf.ROHF):
+        if isinstance(mf, dft.KohnShamDFT):
+            mf = mf.to_uks()
+        else:
+            mf = mf.to_uhf()
+    oa = mf.mol.nelec[0]
+    nvir = mf.mol.nao_nr() - mf.mol.nelec[1]
+    S = []
+    j = 0
+
+    for i in range(min(20, len(mftd.xy))):
+        xy = mftd.xy[i]
+        s2 = spin_square(mf, mftd.xy[i], extype=1, tdtype=tdtype)
+        x = xy[0][1].flatten()
+        norm = x.conj() * x
+        idx_mo = numpy.argsort(norm)
+        idx_u = idx_mo[-1]
+        idx_u2 = idx_mo[-2]
+
+        a_i_mo_idx = (idx_u//nvir+1, idx_u%nvir+1)
+        a_i_mo_idx2 =(idx_u2//nvir+1, idx_u2%nvir+1)
+
+        if Smin <= s2 <= Smax:
+            j += 1
+            mas = f'{i}-th state with excitation energy = {mftd.e[i]*HARTREE2EV:.4f} eV, '
+            mas += f'S^2 = {s2:.4f} '
+            mas += f'Norms: {norm[idx_u]:.3f}@{a_i_mo_idx}, {norm[idx_u2]:.3f}@{a_i_mo_idx2}'
+            log.note(mas)
+            S.append(i)
+    return S
