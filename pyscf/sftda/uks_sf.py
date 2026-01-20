@@ -32,7 +32,7 @@ class CasidaTDDFT(TDA_SF):
        [ A  B][X]
        [-B -A][Y]
     '''
-
+    max_space = getattr(__config__, 'tdscf_rhf_TDA_max_space', 50)
     init_guess = TDA_SF.init_guess
 
     def gen_vind(self, mf=None,extype=0,collinear_samples=200):
@@ -113,7 +113,6 @@ class CasidaTDDFT(TDA_SF):
         '''SF-TDDFT diagonalization solver
         '''
         cpu0 = (logger.process_clock(), logger.perf_counter())
-        # mf = self._scf
 
         self.check_sanity()
         self.dump_flags()
@@ -143,7 +142,7 @@ class CasidaTDDFT(TDA_SF):
 
         def pickeig(w, v, nroots, envs):
             realidx = numpy.where((abs(w.imag) < 1e-4) &
-                                  (w.real > -1e-3))[0]
+                                  (w.real > self.positive_eig_threshold))[0]
             return lib.linalg_helper._eigs_cmplx2real(w, v, realidx,
                                                       real_eigenvectors=True)
 
@@ -210,7 +209,8 @@ def tddft(mf):
     '''Driver to create TDDFT_SF or CasidaTDDFT_SF object'''
     return CasidaTDDFT(mf)
 
-from pyscf import dft
+from pyscf import scf, dft
 dft.uks.UKS.TDA_SF   = lib.class_as_method(TDA_SF)
 dft.uks.UKS.TDDFT_SF = lib.class_as_method(TDDFT_SF)
-dft.uks.UKS.TDDFT_SF = tddft
+scf.uhf.UHF.TDA_SF   = lib.class_as_method(TDA_SF)
+scf.uhf.UHF.TDDFT_SF = lib.class_as_method(TDDFT_SF)

@@ -50,7 +50,9 @@ def _gen_uhf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, extype=0, coll
         'MultiGridFFTDF' == getattr(mf, 'with_df', None).__class__.__name__):
         raise NotImplementedError("Spin Flip TDDFT doesn't support pbc calculations.")
 
-    fxc = cache_xc_kernel_sf(ni,mol, mf.grids, mf.xc, mo_coeff, mo_occ, deriv=2, spin=1)[2]
+    if collinear_samples >= 0:
+        fxc = cache_xc_kernel_sf(ni,mol, mf.grids, mf.xc, mo_coeff, mo_occ, deriv=2, spin=1)[2]
+
     dm0 = None
 
     if max_memory is None:
@@ -58,8 +60,13 @@ def _gen_uhf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, extype=0, coll
         max_memory = max(2000, mf.max_memory*.8-mem_now)
 
     def vind(dm1):
-        in2 = numint.NumInt()
-        v1 = nr_uks_fxc_sf(in2,mol, mf.grids, mf.xc, dm0, dm1, 0, hermi,
+        if collinear_samples < 0:
+            ref_dm = dm1[0]
+            v_zeros = numpy.zeros_like(ref_dm)
+            v1 = numpy.array([v_zeros] * 4)
+        else:
+            in2 = numint.NumInt()
+            v1 = nr_uks_fxc_sf(in2,mol, mf.grids, mf.xc, dm0, dm1, 0, hermi,
                                None, None, fxc, extype=extype,max_memory=max_memory)
         if not hybrid:
             # No with_j because = 0 in spin flip part.
@@ -105,7 +112,9 @@ def _gen_uhf_tda_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, collinear_
         'MultiGridFFTDF' == getattr(mf, 'with_df', None).__class__.__name__):
         raise NotImplementedError("Spin Flip TDDFT doesn't support pbc calculations.")
 
-    fxc = cache_xc_kernel_sf(ni,mol, mf.grids, mf.xc, mo_coeff, mo_occ, deriv=2, spin=1)[2]
+    if collinear_samples >= 0:
+        fxc = cache_xc_kernel_sf(ni,mol, mf.grids, mf.xc, mo_coeff, mo_occ, deriv=2, spin=1)[2]
+    
     dm0 = None
 
     if max_memory is None:
@@ -113,9 +122,12 @@ def _gen_uhf_tda_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, collinear_
         max_memory = max(2000, mf.max_memory*.8-mem_now)
 
     def vind(dm1):
-        in2 = numint.NumInt()
-        v1 = nr_uks_fxc_sf_tda(in2,mol, mf.grids, mf.xc, dm0, dm1, 0, hermi,
-                               None, None, fxc, max_memory=max_memory)
+        if collinear_samples < 0:
+            v1 = numpy.zeros_like(dm1)
+        else:
+            in2 = numint.NumInt()
+            v1 = nr_uks_fxc_sf_tda(in2,mol, mf.grids, mf.xc, dm0, dm1, 0, hermi,
+                                None, None, fxc, max_memory=max_memory)
         if not hybrid:
             # No with_j because = 0 in spin flip part.
             pass

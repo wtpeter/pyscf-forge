@@ -147,8 +147,7 @@ def nr_uks_fxc_sf_tda(ni, mol, grids, xc_code, dm0, dms, relativity=0, hermi=0,r
 
     xctype = ni._xc_type(xc_code)
 
-    nao = dms.shape[-1]
-    make_rhosf, nset = ni._gen_rho_evaluator(mol, dms, hermi, False, grids)[:2]
+    make_rhosf, nset, nao = ni._gen_rho_evaluator(mol, dms, hermi, False, grids)
 
     def block_loop(ao_deriv):
         p1 = 0
