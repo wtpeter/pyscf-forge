@@ -130,9 +130,15 @@ def gen_tda_operation_sf(mf, fock_ao=None, wfnsym=None,extype=0,collinear_sample
         orbva = mo_coeff[0][:,viridxa]
         orbov = (orbob,orbva)
         ndim = (noccb,nvira)
-
-        e_ia = (mo_energy[0][viridxa,None] - mo_energy[1][occidxb]).T
-        hdiag = e_ia.ravel()
+        if np.allclose(mo_coeff[0], mo_coeff[1]):
+            fock_mat = mf.get_fock()
+            fock_mat = lib.einsum('sui,suv,svj->sij', mo_coeff, fock_mat, mo_coeff)
+            fockv = fock_mat[0][viridxa][:, viridxa]
+            focko = fock_mat[1][occidxb][:, occidxb]
+            hdiag = (fockv.diagonal()[:, None] - focko.diagonal()[None, :]).T.ravel()
+        else:
+            e_ia = (mo_energy[0][viridxa,None] - mo_energy[1][occidxb]).T
+            hdiag = e_ia.ravel()
 
     elif extype==1:
         occidxa = np.where(mo_occ[0]>0)[0]
@@ -143,9 +149,15 @@ def gen_tda_operation_sf(mf, fock_ao=None, wfnsym=None,extype=0,collinear_sample
         orbvb = mo_coeff[1][:,viridxb]
         orbov = (orboa,orbvb)
         ndim = (nocca,nvirb)
-
-        e_ia = (mo_energy[1][viridxb,None] - mo_energy[0][occidxa]).T
-        hdiag = e_ia.ravel()
+        if np.allclose(mo_coeff[0], mo_coeff[1]):
+            fock_mat = mf.get_fock()
+            fock_mat = lib.einsum('sui,suv,svj->sij', mo_coeff, fock_mat, mo_coeff)
+            fockv = fock_mat[1][viridxb][:, viridxb]
+            focko = fock_mat[0][occidxa][:, occidxa]
+            hdiag = (fockv.diagonal()[:, None] - focko.diagonal()[None, :]).T.ravel()
+        else:
+            e_ia = (mo_energy[1][viridxb,None] - mo_energy[0][occidxa]).T
+            hdiag = e_ia.ravel()
 
     mem_now = lib.current_memory()[0]
     max_memory = max(2000, mf.max_memory*.8-mem_now)
@@ -164,7 +176,11 @@ def gen_tda_operation_sf(mf, fock_ao=None, wfnsym=None,extype=0,collinear_sample
         v1ao = vresp(dmov)
         v1 = lib.einsum('xpq,po,qv->xov', v1ao, orbo.conj(), orbv)
         # add the orbital energy difference in A matrix.
-        v1 += lib.einsum('ov,xov->xov', e_ia, zs)
+        if np.allclose(mo_coeff[0], mo_coeff[1]):
+            v1 += lib.einsum('ab,xib->xia', fockv, zs)
+            v1 -= lib.einsum('ji,xja->xia', focko, zs)
+        else:
+            v1 += lib.einsum('ov,xov->xov', e_ia, zs)
         nz = zs.shape[0]
         hx = v1.reshape(nz,-1)
 
@@ -184,8 +200,8 @@ def get_ab_sf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples=
     List A has two items: (A_baba, A_abab).
     List B has two items: (B_baab, B_abba).
     '''
-    if isinstance(mf, scf.rohf.ROHF):
-        if isinstance(mf, dft.roks.ROKS):
+    if isinstance(mf, scf.rohf.ROHF) or isinstance(mf, scf.hf_symm.SymAdaptedROHF):
+        if isinstance(mf, dft.roks.ROKS) or isinstance(mf, dft.rks_symm.SymAdaptedROKS):
             mf = mf.to_uks()
         else:
             mf = mf.to_uhf()
@@ -592,4 +608,3 @@ class TDA_SF(TDBase):
         return tduks_sf.Gradients(self)
 
     analyze = analyze
-

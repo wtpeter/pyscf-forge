@@ -63,13 +63,29 @@ class CasidaTDDFT(TDA_SF):
             raise NotImplementedError("UKS Spin Flip TDA/ TDDFT haven't taken symmetry\
                                       into account.")
 
-        e_ia_b2a = (mo_energy[0][viridxa,None] - mo_energy[1][occidxb]).T
-        e_ia_a2b = (mo_energy[1][viridxb,None] - mo_energy[0][occidxa]).T
+        if numpy.allclose(mo_coeff[0], mo_coeff[1]):
+            fock_mat = mf.get_fock()
+            fock_mat = lib.einsum('sui,suv,svj->sij', mo_coeff, fock_mat, mo_coeff)
+            fockva = fock_mat[0][viridxa][:, viridxa]
+            fockvb = fock_mat[1][viridxb][:, viridxb]
+            fockoa = fock_mat[0][occidxa][:, occidxa]
+            fockob = fock_mat[1][occidxb][:, occidxb]
+            if self.extype==0:
+                hdiag1 = (fockva.diagonal()[:, None] - fockob.diagonal()[None, :]).T.ravel()
+                hdiag2 = - (fockvb.diagonal()[:, None] - fockoa.diagonal()[None, :]).T.ravel()
+                hdiag = numpy.hstack((hdiag1, hdiag2))
+            elif self.extype==1:
+                hdiag1 = (fockvb.diagonal()[:, None] - fockoa.diagonal()[None, :]).T.ravel()
+                hdiag2 = - (fockva.diagonal()[:, None] - fockob.diagonal()[None, :]).T.ravel()
+                hdiag = numpy.hstack((hdiag1, hdiag2))
+        else:
+            e_ia_b2a = (mo_energy[0][viridxa,None] - mo_energy[1][occidxb]).T
+            e_ia_a2b = (mo_energy[1][viridxb,None] - mo_energy[0][occidxa]).T
 
-        if self.extype==0:
-            hdiag = numpy.hstack((e_ia_b2a.ravel(), -e_ia_a2b.ravel()))
-        elif self.extype==1:
-            hdiag = numpy.hstack((e_ia_a2b.ravel(), -e_ia_b2a.ravel()))
+            if self.extype==0:
+                hdiag = numpy.hstack((e_ia_b2a.ravel(), -e_ia_a2b.ravel()))
+            elif self.extype==1:
+                hdiag = numpy.hstack((e_ia_a2b.ravel(), -e_ia_b2a.ravel()))
 
         vresp = _gen_uhf_response_sf(mf, mo_coeff, mo_occ, hermi=0, extype=extype, collinear_samples=collinear_samples)
 
@@ -94,8 +110,14 @@ class CasidaTDDFT(TDA_SF):
             v1B_a2b = lib.einsum('xpq,po,qv->xov', v1aoB_a2b, orboa, orbvb.conj())
 
             # add the orbital energy difference in A matrix.
-            v1A_b2a += lib.einsum('ov,xov->xov', e_ia_b2a, zsb2a)
-            v1A_a2b += lib.einsum('ov,xov->xov', e_ia_a2b, zsa2b)
+            if numpy.allclose(mo_coeff[0], mo_coeff[1]):
+                v1A_b2a += lib.einsum('ab,xib->xia', fockva, zsb2a)
+                v1A_b2a -= lib.einsum('ji,xja->xia', fockob, zsb2a)
+                v1A_a2b += lib.einsum('ab,xib->xia', fockvb, zsa2b)
+                v1A_a2b -= lib.einsum('ji,xja->xia', fockoa, zsa2b)
+            else:
+                v1A_b2a += lib.einsum('ov,xov->xov', e_ia_b2a, zsb2a)
+                v1A_a2b += lib.einsum('ov,xov->xov', e_ia_a2b, zsa2b)
 
             if self.extype==0:
                 v1_top = v1A_b2a + v1B_b2a

@@ -117,7 +117,7 @@ fake_td.analyze()
 # -------------------------------------------------------------------
 print_header("CALCULATION 3: Spin-Flip-Up TDDFT")
 
-sfu_tddft = sftda.uks_sf.TDDFT_SF(mf)
+sfu_tddft = sftda.TDDFT_SF(mf)
 sfu_tddft.extype = 0  # 0 for spin-flip-up excitations
 sfu_tddft.nstates = 5
 sfu_tddft.collinear_samples = 50
@@ -126,6 +126,6 @@ sfu_tddft.kernel()
 sfu_tddft.analyze(verbose=4)
 
 print("\n--- Compare with Casida Neg-Norm Roots ---")
-# SF-Up roots appear as negative eigenvalues in the full Casida matrix 
+# Spin-flip-up roots appear as negative eigenvalues in the full Casida matrix 
 sfu_evals_val = eigenvals[norms < 0]
 print(f"Casida derived SF-Up Energies (eV): \n{-sfu_evals_val[-5:][::-1] * 27.2114}")
