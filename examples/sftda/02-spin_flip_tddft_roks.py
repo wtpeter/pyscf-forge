@@ -34,7 +34,6 @@ sfd_tddft = sftda.TDDFT_SF(mf) # same as umf.TDDFT_SF()
 sfd_tddft.nstates = 5
 sfd_tddft.extype = 1  # 1 for spin-flip-down excitations
 sfd_tddft.collinear_samples = 50
-sfd_tddft.positive_eig_threshold = -0.2 
 sfd_tddft.kernel()
 sfd_tddft.analyze(verbose=4)
 
@@ -84,7 +83,7 @@ fake_td.e = sfd_eigenvals
 fake_td.xy = [norm_xy(z) for z in sfd_eigenvecs]
 fake_td.analyze()
 
-# Spin-flip up TDA
+# Spin-flip-up TDA
 print_header("CALCULATION 3: Spin-Flip-Up TDA")
 sfu_tda = sftda.TDA_SF(mf)
 sfu_tda.extype = 0  # 0 for spin-flip-up excitations

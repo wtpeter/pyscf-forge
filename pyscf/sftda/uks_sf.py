@@ -131,6 +131,41 @@ class CasidaTDDFT(TDA_SF):
 
         return vind, hdiag
 
+    def gen_pickeig(self, extype=1):
+        '''
+        Selects physical roots based on the norm condition ||X|| > ||Y||.
+        This replaces the previous empirical energy threshold (`positive_eig_threshold`).
+        '''
+        mo_occ = self._scf.mo_occ
+        occidxa = numpy.where(mo_occ[0]>0)[0]
+        occidxb = numpy.where(mo_occ[1]>0)[0]
+        viridxa = numpy.where(mo_occ[0]==0)[0]
+        viridxb = numpy.where(mo_occ[1]==0)[0]
+        nocca = len(occidxa)
+        noccb = len(occidxb)
+        nvira = len(viridxa)
+        nvirb = len(viridxb)
+        if extype==0:
+            ov = noccb * nvira
+        elif extype==1:
+            ov = nocca * nvirb
+        def pickeig(w, v, nroots, envs):
+            xs = numpy.vstack(envs.get('xs'))
+            ritz_vectors = v.T.dot(xs)
+            x_part = ritz_vectors[:, :ov]
+            y_part = ritz_vectors[:, ov:]
+            norm_x2 = numpy.linalg.norm(x_part, axis=1)**2
+            norm_y2 = numpy.linalg.norm(y_part, axis=1)**2
+            is_physical = (norm_x2 > norm_y2 - 1e-4) & (abs(w.imag) < 1e-4)
+            realidx = numpy.where(is_physical)[0]
+            if len(realidx) < nroots:
+                remaining_idx = numpy.setdiff1d(numpy.arange(len(w)), realidx)
+                sorted_rem = remaining_idx[numpy.argsort(w[remaining_idx].real)]
+                needed = nroots - len(realidx)
+                realidx = numpy.concatenate([realidx, sorted_rem[:needed]])
+            return lib.linalg_helper._eigs_cmplx2real(w, v, realidx, real_eigenvectors=True)
+        return pickeig
+
     def kernel(self, x0=None, nstates=None,extype=None,collinear_samples=None):
         '''SF-TDDFT diagonalization solver
         '''
@@ -162,12 +197,13 @@ class CasidaTDDFT(TDA_SF):
         if x0 is None:
             x0 = self.init_guess(self._scf, self.nstates)
 
-        def pickeig(w, v, nroots, envs):
-            realidx = numpy.where((abs(w.imag) < 1e-4) &
-                                  (w.real > self.positive_eig_threshold))[0]
-            return lib.linalg_helper._eigs_cmplx2real(w, v, realidx,
-                                                      real_eigenvectors=True)
-
+        # 
+        # def pickeig(w, v, nroots, envs):
+        #     realidx = numpy.where((abs(w.imag) < 1e-4) &
+        #                           (w.real > self.positive_eig_threshold))[0]
+        #     return lib.linalg_helper._eigs_cmplx2real(w, v, realidx,
+        #                                               real_eigenvectors=True)
+        pickeig = self.gen_pickeig(extype=extype)
         # Because the degeneracy has been dealt with by init_guess_sf function.
         nstates_new = x0.shape[0]
         converged, w, x1 = \

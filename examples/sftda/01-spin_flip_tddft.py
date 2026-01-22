@@ -5,7 +5,7 @@ Spin-flip TDDFT/TDA examples.
 Key features demonstrated:
 1. Spin-flip down (High spin -> Low spin) setup.
 2. Spin-flip up (High spin -> Higher spin) setup.
-3. Critical parameters: extype, collinear_samples, positive_eig_threshold.
+3. Critical parameters: extype, collinear_samples
 4. Validation via explicit construction and diagonalization of the Casida matrix.
 '''
 
@@ -19,7 +19,7 @@ def print_header(title):
     print("="*60)
 
 # -------------------------------------------------------------------
-# 1. System Initialization
+# 1. Initialization
 # -------------------------------------------------------------------
 atom = '''
 H  0.000000  0.934473 -0.588078
@@ -36,7 +36,7 @@ print_header("Reference Ground State Analysis")
 mf.analyze() # Check orbital symmetries of the reference
 
 # -------------------------------------------------------------------
-# 2. Spin-Flip Down TDDFT (e.g., Triplet -> Singlet)
+# 2. Spin-Flip-Down TDDFT (e.g., Triplet -> Singlet)
 # -------------------------------------------------------------------
 print_header("CALCULATION 1: Spin-Flip-Down TDDFT")
 
@@ -51,16 +51,11 @@ sfd_tddft.extype = 1 # 1 for spin-flip-down excitations
 # 50 is a typical robust value. -1 for SF-TDDFT using collinear functional
 sfd_tddft.collinear_samples = 50 
 
-# positive_eig_threshold: 
-# In SF-TDDFT, the target state can be lower in energy than the reference (Negative Excitation Energy).
-# Setting the threshold to allow the solver to find negative roots.
-sfd_tddft.positive_eig_threshold = -0.2 
-
 sfd_tddft.kernel()
 sfd_tddft.analyze(verbose=4) # Verbose=4 shows orbital composition
 
 # -------------------------------------------------------------------
-# 3. Spin-Flip Down TDA
+# 3. Spin-Flip-Down TDA
 # -------------------------------------------------------------------
 print_header("CALCULATION 2: Spin-Flip-Down TDA")
 
@@ -113,7 +108,7 @@ fake_td.xy = [norm_xy(z) for z in sfd_eigenvecs]
 fake_td.analyze()
 
 # -------------------------------------------------------------------
-# 5. Spin-Flip Up TDDFT (e.g. Triplet -> Quintet)
+# 5. Spin-Flip-Up TDDFT (e.g. Triplet -> Quintet)
 # -------------------------------------------------------------------
 print_header("CALCULATION 3: Spin-Flip-Up TDDFT")
 
@@ -121,11 +116,10 @@ sfu_tddft = sftda.TDDFT_SF(mf)
 sfu_tddft.extype = 0  # 0 for spin-flip-up excitations
 sfu_tddft.nstates = 5
 sfu_tddft.collinear_samples = 50
-sfu_tddft.positive_eig_threshold = 0.2
 sfu_tddft.kernel()
 sfu_tddft.analyze(verbose=4)
 
 print("\n--- Compare with Casida Neg-Norm Roots ---")
 # Spin-flip-up roots appear as negative eigenvalues in the full Casida matrix 
 sfu_evals_val = eigenvals[norms < 0]
-print(f"Casida derived SF-Up Energies (eV): \n{-sfu_evals_val[-5:][::-1] * 27.2114}")
+print(f"Casida derived Spin-flip-up Energies (eV): \n{-sfu_evals_val[-5:][::-1] * 27.2114}")
