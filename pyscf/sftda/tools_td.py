@@ -13,203 +13,103 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import numpy
+import numpy as np
 from functools import reduce
 from pyscf import lib, scf, dft
 from pyscf.scf.uhf import spin_square as spin_square_scf
 from pyscf.data.nist import HARTREE2EV
 from pyscf.lib import logger
 
-def spin_square(mf,xy,extype=0,tdtype='TDDFT'):
+def spin_square(td, state=None):
     r'''calculator of <S^2> of excited states using tddft/tda.
         Ref. J. Chem. Phys. 2011, 134, 134101.
-
-    Args:
-        mf :
-            UKS object
-        xy : tuple
-            transition vactor of i-th state
-
-    Kwargs:
-        extype : int
-            excitation types: 0,1,2
-            excitation types: spin-flip-up, spin-flip-down, spin-conserved
-        tdtype : str
-            'TDDFT' or 'TDA' for different objects
-
-    Returns:
-        ssI :
-            The expectation value of S^2.
     '''
-    if isinstance(mf, scf.rohf.ROHF):
-        if isinstance(mf, dft.KohnShamDFT):
-            mf = mf.to_uks()
-        else:
-            mf = mf.to_uhf()
-    mo = mf.mo_coeff
+    mf = td._scf
+    s20, _ = mf.spin_square()
+    sz = mf.mol.spin / 2.0
+
+    mo_coeff = mf.mo_coeff
     mo_occ = mf.mo_occ
-    occidxa = numpy.where(mo_occ[0]>0)[0]
-    occidxb = numpy.where(mo_occ[1]>0)[0]
-    viridxa = numpy.where(mo_occ[0]==0)[0]
-    viridxb = numpy.where(mo_occ[1]==0)[0]
-    mooa = mo[0][:,occidxa]
-    moob = mo[1][:,occidxb]
-    mova = mo[0][:,viridxa]
-    movb = mo[1][:,viridxb]
+    occidxa = mo_occ[0] > 0
+    occidxb = mo_occ[1] > 0
+    viridxa = mo_occ[0] == 0
+    viridxb = mo_occ[1] == 0
+    orboa = mo_coeff[0][:, occidxa]
+    orbob = mo_coeff[1][:, occidxb]
+    orbva = mo_coeff[0][:, viridxa]
+    orbvb = mo_coeff[1][:, viridxb]
 
     ovlp = mf.get_ovlp()
-    # get the <S^2>_0, 2S_0+1 for the ground state
-    ss0,dsp1 = spin_square_scf((mooa,moob),ovlp)
-    s = (dsp1-1) *.5
-
-    x,y = xy
-    # sxx_xx : spin transfer matrix
-    sab_oo = reduce(numpy.dot, (mooa.conj().T, ovlp, moob))
+    sab_oo = orboa.conj().T @ ovlp @ orbob
     sba_oo = sab_oo.conj().T
-    sab_vo = reduce(numpy.dot, (mova.conj().T, ovlp, moob))
-    sba_vo = reduce(numpy.dot, (movb.conj().T, ovlp, mooa))
-    sab_vv = reduce(numpy.dot, (mova.conj().T, ovlp, movb))
-    sba_vv = sab_vv.conj().T
+    sab_vo = orbva.conj().T @ ovlp @ orbob
+    sba_ov = sab_vo.conj().T
+    sba_vo = orbvb.conj().T @ ovlp @ orboa
+    sab_ov = sba_vo.conj().T
 
-    if extype==0 or extype==1:
-        x_ab,x_ba = x
-        y_ab,y_ba = y
+    if state is None:
+        state = np.arange(td.nstates)
+    if isinstance(state, int):
+        states = [state]
+    else:
+        states = state
+    states = np.array(states)
+    xs = np.array([td.xy[i][0].T for i in states])
+    if isinstance(td.xy[0][1], np.ndarray):
+        ys = np.array([td.xy[i][1].T for i in states])
+    else:
+        ys = None
 
-        if extype==0:
-            x_ab = x_ab.transpose(1,0)
-            if tdtype=='TDDFT':
-                y_ba = y_ba.transpose(1,0)
+    if td.extype==0:
+        assert xs[0].shape==sab_vo.shape
+        P_ab = lib.einsum('nai,naj,jk,ki->n', xs.conj(), xs, sba_oo, sab_oo) \
+               - lib.einsum('nai,nbi,kb,ak->n', xs.conj(), xs, sba_ov, sab_vo) \
+               + lib.einsum('nai,nbj,jb,ai->n', xs.conj(), xs, sba_ov, sab_vo)
+        if ys is not None:
+            assert ys[0].shape==sba_vo.shape
+            P_ab += lib.einsum('nai,naj,ik,kj->n', ys.conj(), ys, sab_oo, sba_oo) \
+                    - lib.einsum('nai,nbi,ka,bk->n', ys.conj(), ys, sab_ov, sba_vo) \
+                    + lib.einsum('nai,nbj,ia,bj->n', ys.conj(), ys, sab_ov, sba_vo) \
+                    - 2 * lib.einsum('nai,nbj,ai,bj->n', xs.conj(), ys, sab_vo, sba_vo).real
+        ds2 = P_ab + 2 * sz + 1
+    elif td.extype==1:
+        assert xs[0].shape==sba_vo.shape
+        P_ab = lib.einsum('nai,naj,jk,ki->n', xs.conj(), xs, sab_oo, sba_oo) \
+               - lib.einsum('nai,nbi,kb,ak->n', xs.conj(), xs, sab_ov, sba_vo) \
+               + lib.einsum('nai,nbj,jb,ai->n', xs.conj(), xs, sab_ov, sba_vo)
+        if ys is not None:
+            assert ys[0].shape==sab_vo.shape
+            P_ab += lib.einsum('nai,naj,ik,kj->n', ys.conj(), ys, sba_oo, sab_oo) \
+                    - lib.einsum('nai,nbi,ka,bk->n', ys.conj(), ys, sba_ov, sab_vo) \
+                    + lib.einsum('nai,nbj,ia,bj->n', ys.conj(), ys, sba_ov, sab_vo) \
+                    - 2 * lib.einsum('nai,nbj,ai,bj->n', xs.conj(), ys, sba_vo, sab_vo).real
+        ds2 = P_ab - 2 * sz + 1
+    
+    s2s = s20 + ds2.real
+    if isinstance(state, int):
+        return s2s[0]
+    else:
+        return s2s
 
-            P_ab = lib.einsum('ai,aj,jk,ki',x_ab.conj(),x_ab,sab_oo.T.conj(),sab_oo)\
-                  -lib.einsum('ai,bi,kb,ak',x_ab.conj(),x_ab,sab_vo.T.conj(),sab_vo)\
-                  +lib.einsum('ai,bj,jb,ai',x_ab.conj(),x_ab,sab_vo.T.conj(),sab_vo)
-
-            if tdtype=='TDDFT':
-                P_ab+= lib.einsum('ai,aj,ik,kj',y_ba.conj(),y_ba,sab_oo,sab_oo.T.conj())\
-                      -lib.einsum('ai,bi,ka,bk',y_ba.conj(),y_ba,sba_vo.T.conj(),sba_vo)\
-                      +lib.einsum('ai,bj,ia,bj',y_ba.conj(),y_ba,sba_vo.T.conj(),sba_vo)
-
-                P_ab-= lib.einsum('ai,bj,ai,bj',x_ab.conj(),y_ba,sab_vo,sba_vo) *2.0
-
-            ds2 = P_ab + 2*s+1
-
-        elif extype==1:
-            x_ba = x_ba.transpose(1,0)
-            if tdtype=='TDDFT':
-                y_ab = y_ab.transpose(1,0)
-
-            P_ab = lib.einsum('ai,aj,jk,ki',x_ba.conj(),x_ba,sba_oo.T.conj(),sba_oo)\
-                  -lib.einsum('ai,bi,kb,ak',x_ba.conj(),x_ba,sba_vo.T.conj(),sba_vo)\
-                  +lib.einsum('ai,bj,jb,ai',x_ba.conj(),x_ba,sba_vo.T.conj(),sba_vo)
-
-            if tdtype=='TDDFT':
-                P_ab+= lib.einsum('ai,aj,ik,kj',y_ab.conj(),y_ab,sba_oo,sba_oo.T.conj())\
-                      -lib.einsum('ai,bi,ka,bk',y_ab.conj(),y_ab,sab_vo.T.conj(),sab_vo)\
-                      +lib.einsum('ai,bj,ia,bj',y_ab.conj(),y_ab,sab_vo.T.conj(),sab_vo)
-
-                P_ab-= lib.einsum('ai,bj,ai,bj',x_ba.conj(),y_ab,sba_vo,sab_vo) *2.0
-
-            ds2 = P_ab - 2*s+1
-
-    elif extype==2:
-        x_aa,x_bb = x
-        y_aa,y_bb = y
-        x_aa = x_aa.transpose(1,0)
-        x_bb = x_bb.transpose(1,0)
-        if tdtype=='TDDFT':
-            y_aa = y_aa.transpose(1,0)
-            y_bb = y_bb.transpose(1,0)
-
-        P_ab = lib.einsum('ai,aj,ki,jk',x_aa.conj(),x_aa,sba_oo,sab_oo)\
-              -lib.einsum('ai,bi,ak,kb',x_aa.conj(),x_aa,sab_vo,sab_vo.conj().T)
-        P_ab+= lib.einsum('ai,aj,ki,jk',x_bb.conj(),x_bb,sab_oo,sba_oo)\
-              -lib.einsum('ai,bi,ak,kb',x_bb.conj(),x_bb,sba_vo,sba_vo.conj().T)
-        P_ab-= lib.einsum('ai,bj,ji,ab',x_aa.conj(),x_bb,sba_oo,sab_vv) *2.0
-
-        if tdtype=='TDDFT':
-            P_ab+= lib.einsum('ai,aj,kj,ik',y_aa.conj(),y_aa,sba_oo,sab_oo)\
-                  -lib.einsum('ai,bi,bk,ka',y_aa.conj(),y_aa,sab_vo,sab_vo.conj().T)
-            P_ab+= lib.einsum('ai,aj,kj,ik',y_bb.conj(),y_bb,sab_oo,sba_oo)\
-                  -lib.einsum('ai,bi,bk,ka',y_bb.conj(),y_bb,sba_vo,sba_vo.conj().T)
-            P_ab-= lib.einsum('ai,bj,ba,ij',y_aa.conj(),y_bb,sba_vv,sab_oo) *2.0
-
-            P_ab+= lib.einsum('ai,bj,aj,bi',x_aa.conj(),y_bb,sab_vo,sba_vo) *2.0
-            P_ab+= lib.einsum('ai,bj,aj,bi',x_bb.conj(),y_aa,sba_vo,sab_vo) *2.0
-
-        ds2 = P_ab
-
-    ssI= ss0 + ds2
-    return ssI
-
-def transition_analyze(scfobj, tdobj, extd, xy, tdtype='TDA'):
-    if isinstance(scfobj, scf.rohf.ROHF):
-        if isinstance(scfobj, dft.KohnShamDFT):
-            scfobj = scfobj.to_uks()
-        else:
-            scfobj = scfobj.to_uhf()
-    nmo = scfobj.mol.nao
-    nocca = scfobj.mo_occ[0].sum()
-    noccb = scfobj.mo_occ[1].sum()
-    nvira = nmo - nocca
-    nvirb = nmo - noccb
-
-    if tdobj.extype==0:
-        nvir = nvira
-
-    elif tdobj.extype== 1:
-        nvir = nvirb
-
-    ss2 = spin_square(scfobj,xy,extype=tdobj.extype,tdtype=tdtype)
-    output = f'Excited energy :{extd*HARTREE2EV:.6f} eV,  <S2> value : {ss2:.4f}\n'
-
-    if tdobj.extype == 0:
-        x=xy[0][0].flatten()
-    elif tdobj.extype == 1:
-        x=xy[0][1].flatten()
-
-    norm = x.conj()* x
-    idx_mo = numpy.argsort(norm)
-    idx_u = idx_mo[-1]
-    idx_u2 = idx_mo[-2]
-
-    a_i_mo_idx = (idx_u//nvir+1, idx_u%nvir+1)
-    a_i_mo_idx2 =(idx_u2//nvir+1, idx_u2%nvir+1)
-
-    output += f'Norms: {norm[idx_u]:.3f}@{a_i_mo_idx}, {norm[idx_u2]:.3f}@{a_i_mo_idx2}\n'
-
-    return output
-
-def extract_state(mf, mftd, tdtype='TDDFT', Smin=0.0, Smax=0.7, verbose=None):
+def extract_state(td, Smin=0.0, Smax=0.7, verbose=None):
     if verbose is None:
-        verbose = mf.verbose
-    log = logger.new_logger(mftd, verbose=verbose)
-    if isinstance(mf, scf.rohf.ROHF):
-        if isinstance(mf, dft.KohnShamDFT):
-            mf = mf.to_uks()
-        else:
-            mf = mf.to_uhf()
-    oa = mf.mol.nelec[0]
-    nvir = mf.mol.nao_nr() - mf.mol.nelec[1]
-    S = []
-    j = 0
+        verbose = td.verbose
+    log = logger.new_logger(td, verbose=verbose)
 
-    for i in range(min(20, len(mftd.xy))):
-        xy = mftd.xy[i]
-        s2 = spin_square(mf, mftd.xy[i], extype=1, tdtype=tdtype)
-        x = xy[0][1].flatten()
-        norm = x.conj() * x
-        idx_mo = numpy.argsort(norm)
-        idx_u = idx_mo[-1]
-        idx_u2 = idx_mo[-2]
-
-        a_i_mo_idx = (idx_u//nvir+1, idx_u%nvir+1)
-        a_i_mo_idx2 =(idx_u2//nvir+1, idx_u2%nvir+1)
-
-        if Smin <= s2 <= Smax:
-            j += 1
-            mas = f'{i}-th state with excitation energy = {mftd.e[i]*HARTREE2EV:.4f} eV, '
-            mas += f'S^2 = {s2:.4f} '
-            mas += f'Norms: {norm[idx_u]:.3f}@{a_i_mo_idx}, {norm[idx_u2]:.3f}@{a_i_mo_idx2}'
-            log.note(mas)
-            S.append(i)
-    return S
+    s2 = spin_square(td, np.arange(td.nstates))
+    targets = np.where((s2 >= Smin) & (s2 <= Smax))[0]
+    for i in targets:
+        msg = f'State {i+1:>2d}: E = {td.e[i]*HARTREE2EV:>7.4f} eV, <S^2> = {s2[i]:>6.3f}'
+        if log.verbose >= logger.INFO:
+            msg += ', dominated by:'
+            x = td.xy[i][0]
+            flat_indices = np.argsort(abs(x).ravel())[-2:][::-1]
+            for o, v in zip(*np.unravel_index(flat_indices, x.shape)):
+                if td.extype==0:
+                    nocca = td._scf.mo_occ[0].sum()
+                    msg += f' {x[o, v]:>6.3f}@({int(o+1)}b, {int(v+nocca+1)}a)'
+                elif td.extype==1:
+                    noccb = td._scf.mo_occ[1].sum()
+                    msg += f' {x[o, v]:>6.3f}@({int(o+1)}a, {int(v+noccb+1)}b)'
+        log.note(msg)
+    return targets
