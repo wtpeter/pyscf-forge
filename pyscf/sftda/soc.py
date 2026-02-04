@@ -5,7 +5,6 @@ from pyscf import gto, lib, sftda
 from pyscf.scf.jk import get_jk
 from pyscf.data.nist import HARTREE2WAVENUMBER, LIGHT_SPEED, HARTREE2EV
 from pyscf.sftda.tools_td import spin_square
-from socutils.somf import somf_pt
 
 def cg(j1, m1, j2, m2, j, m):
     """
@@ -25,7 +24,7 @@ def sozeff(atom, zeff_type="orca"):
     Calculate effective nuclear charge for given atomic number
     copyed from: https://github.com/masaya0222/PyGraSO/blob/main/pygraso/calc_ao_element.py
     """
-    assert zeff_type in ["one", "orca", "pysoc"], f"{zeff_type=} is not valid"
+    assert zeff_type in ["one", "orca", "pysoc"], f"{zeff_type} is not valid"
     neval = {
         1: 1,
         2: 2,
@@ -163,8 +162,11 @@ def calc_ao_soc_1e(mol, Z='one'):
     return np.array([ao_soc_m1, ao_soc_0, ao_soc_1])
 
 def calc_ao_soc_1e_x2camf(mol):
+    try:
+        from socutils.somf import somf_pt
+    except ImportError:
+        raise ImportError("Please install socutils package to use X2CAMF SOC integrals.")
     ao_soc = 2j * somf_pt.get_psoc_x2camf(mol, gaunt=True, gauge=True)
-    # ao_soc = 2j * somf_pt.get_soc_bp1e(mol)
     ao_soc_1 = -0.5 * (ao_soc[0] + 1j * ao_soc[1])
     ao_soc_0 = np.sqrt(0.5) * ao_soc[2]
     ao_soc_m1 = 0.5 * (ao_soc[0] - 1j * ao_soc[1])
@@ -302,7 +304,7 @@ def calc_ao_soc_2e_direct(mf):
     # 如果需要保证 output 结构一致，可以加上 return
     return np.array([soc_somf_m1, soc_somf_0, soc_somf_1])
 
-def calc_soc1(soc_ao, mf, xy1, xy2, s1, s2):
+def calc_soc(soc_ao, mf, xy1, xy2, s1, s2):
     sz = 0.5 * mf.mol.spin - 1
 
     mo_coeff = mf.mo_coeff
@@ -419,7 +421,7 @@ def analyze_soc(td, soctype='SOMF'):
 
     if soctype == 'SOMF':
         soc_ao = calc_ao_soc_1e(td._scf.mol, Z='one')
-        soc_ao += calc_ao_soc_2e(td._scf)
+        soc_ao += calc_ao_soc_2e_direct(td._scf)
     elif soctype == 'Zeff':
         soc_ao = calc_ao_soc_1e(td._scf.mol, Z='orca')
     elif soctype == '1e':
@@ -452,7 +454,7 @@ def build_and_diagonalize_soc(td, soctype='SOMF', verbose=True):
     # 1. 准备 SOC 积分
     if soctype == 'SOMF':
         soc_ao = calc_ao_soc_1e(td._scf.mol, Z='one')
-        soc_ao += calc_ao_soc_2e(td._scf)
+        soc_ao += calc_ao_soc_2e_direct(td._scf)
     elif soctype == 'Zeff':
         soc_ao = calc_ao_soc_1e(td._scf.mol, Z='orca')
     elif soctype == '1e':
