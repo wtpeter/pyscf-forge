@@ -81,47 +81,48 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     dooa = -lib.einsum('ia,ja->ij', x, x)
     doob = -lib.einsum('ia,ja->ij', y, y)
 
-    dmzooa = orboa @ dooa @ orboa.T + orbva @ dvva @ orbva.T
-    dmzoob = orbob @ doob @ orbob.T + orbvb @ dvvb @ orbvb.T
+    dmzooa = reduce(np.dot, (orboa, dooa, orboa.T))
+    dmzooa += reduce(np.dot, (orbva, dvva, orbva.T))
+    dmzoob = reduce(np.dot, (orbob, doob, orbob.T))
+    dmzoob += reduce(np.dot, (orbvb, dvvb, orbvb.T))
 
-    dmx = orbvb @ x.T @ orboa.T # ba
-    dmy = orbob @ y @ orbva.T # ba
+    dmx = reduce(np.dot, (orbvb, x.T, orboa.T))  # ba
+    dmy = reduce(np.dot, (orbob, y, orbva.T))  # ba
     dmt = dmx + dmy
 
     ni = mf._numint
     ni.libxc.test_deriv_order(mf.xc, 3, raise_error=True)
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mol.spin)
-    # TODO: finish the implementation of the following terms
+
     f1vo, f1oo, vxc1, k1ao = \
         _contract_xc_kernel(td_grad, mf.xc, dmt, (dmzooa, dmzoob), True, True, max_memory)
 
     with_k = ni.libxc.is_hybrid_xc(mf.xc)
     if with_k:
-        vj0, vk0 = mf.get_jk(mol, np.stack((dmzooa, dmzoob)), hermi=1) # (2, nao, nao)
+        vj0, vk0 = mf.get_jk(mol, (dmzooa, dmzoob), hermi=1) # (2, nao, nao)
         vk1 = mf.get_k(mol, dmt, hermi=0) * hyb# (nao, nao)
         vk0 = vk0 * hyb
         if omega != 0:
-            vk0 += mf.get_k(mol, np.stack((dmzooa, dmzoob)), hermi=1, omega=omega) * (alpha-hyb)
+            vk0 += mf.get_k(mol, (dmzooa, dmzoob), hermi=1, omega=omega) * (alpha-hyb)
             vk1 += mf.get_k(mol, dmt, hermi=0, omega=omega) * (alpha-hyb)
 
         veff0doo = vj0[0] + vj0[1] - vk0 + f1oo[:,0] + k1ao[:,0]
-        wvoa = orbva.T @ veff0doo[0] @ orboa
-        wvob = orbvb.T @ veff0doo[1] @ orbob
+        wvoa = reduce(np.dot, (orbva.T, veff0doo[0], orboa))
+        wvob = reduce(np.dot, (orbvb.T, veff0doo[1], orbob))
 
-        veff0mo = mo_coeff[1].T @ (f1vo[0] - vk1) @ mo_coeff[0]
+        veff0mo = reduce(np.dot, (mo_coeff[1].T, f1vo[0]-vk1, mo_coeff[0]))
         wvoa += lib.einsum('ac,ka->ck', veff0mo[noccb:, nocca:], x)
         wvoa -= lib.einsum('jk,jc->ck', veff0mo[:noccb, :nocca], y)
         wvob += lib.einsum('ac,ka->ck', veff0mo.T[nocca:, noccb:], y)
         wvob -= lib.einsum('jk,jc->ck', veff0mo.T[:nocca, :noccb], x)
 
     else:
-        vj0 = mf.get_j(mol, np.stack((dmzooa, dmzoob)), hermi=1) # (2, nao, nao)
-        veff0doo = vj0[0] + vj0[1]
-        veff0doo = np.stack((veff0doo, veff0doo)) + f1oo[:,0] + k1ao[:,0]
-        wvoa = orbva.T @ veff0doo[0] @ orboa
-        wvob = orbvb.T @ veff0doo[1] @ orbob
+        vj0 = mf.get_j(mol, (dmzooa, dmzoob), hermi=1) # (2, nao, nao)
+        veff0doo = vj0[0] + vj0[1] + f1oo[:,0] + k1ao[:,0]
+        wvoa = reduce(np.dot, (orbva.T, veff0doo[0], orboa))
+        wvob = reduce(np.dot, (orbvb.T, veff0doo[1], orbob))
 
-        veff0mo = mo_coeff[1].T @ f1vo[0] @ mo_coeff[0]
+        veff0mo = reduce(np.dot, (mo_coeff[1].T, f1vo[0], mo_coeff[0]))
         wvoa += lib.einsum('ac,ka->ck', veff0mo[noccb:, nocca:], x)
         wvoa -= lib.einsum('jk,jc->ck', veff0mo[:noccb, :nocca], y)
         wvob += lib.einsum('ac,ka->ck', veff0mo.T[nocca:, noccb:], y)
@@ -132,12 +133,12 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     def fvind(x):
         xa = x[0, :nvira*nocca].reshape(nvira, nocca)
         xb = x[0, nvira*nocca:].reshape(nvirb, noccb)
-        dma = orbva @ xa @ orboa.T
-        dmb = orbvb @ xb @ orbob.T
+        dma = reduce(np.dot, (orbva, xa, orboa.T))
+        dmb = reduce(np.dot, (orbvb, xb, orbob.T))
         dm1 = np.stack((dma+dma.T, dmb+dmb.T))
         v1 = vresp(dm1)
-        v1a = orbva.T @ v1[0] @ orboa
-        v1b = orbvb.T @ v1[1] @ orbob
+        v1a = reduce(np.dot, (orbva.T, v1[0], orboa))
+        v1b = reduce(np.dot, (orbvb.T, v1[1], orbob))
         return np.hstack((v1a.ravel(), v1b.ravel()))
 
     z1a, z1b = ucphf.solve(fvind, mo_energy, mo_occ, (wvoa, wvob),
@@ -146,22 +147,20 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     time1 = log.timer('Z-vector using UCPHF solver', *time0)
 
     z1ao = np.empty((2, nao, nao))
-    z1ao[0] = orbva @ z1a @ orboa.T
-    z1ao[1] = orbvb @ z1b @ orbob.T
+    z1ao[0] = reduce(np.dot, (orbva, z1a, orboa.T))
+    z1ao[1] = reduce(np.dot, (orbvb, z1b, orbob.T))
     veff = vresp((z1ao + z1ao.transpose(0, 2, 1)))
 
     im0a = np.zeros((nmoa, nmoa))
     im0b = np.zeros((nmob, nmob))
-    im0a[:nocca, :nocca] = orboa.T @ (veff0doo[0] + veff[0]) @ orboa
-    im0b[:noccb, :noccb] = orbob.T @ (veff0doo[1] + veff[1]) @ orbob
-    im0a[:nocca, :nocca] += lib.einsum('al,ka->lk', veff0mo[noccb:, :nocca], x)
-    im0b[:noccb, :noccb] += lib.einsum('al,ka->lk', veff0mo.T[nocca:, :noccb], y)
-
-    im0a[nocca:, nocca:] = lib.einsum('jd,jc->dc', veff0mo[:noccb, nocca:], y)
-    im0b[noccb:, noccb:] = lib.einsum('jd,jc->dc', veff0mo.T[:nocca, noccb:], x)
-
-    im0a[:nocca, nocca:] = lib.einsum('jk,jc->kc', veff0mo[:noccb, :nocca], y) * 2
-    im0b[:noccb, noccb:] = lib.einsum('jk,jc->kc', veff0mo.T[:nocca, :noccb], x) * 2
+    im0a[:nocca,:nocca] = reduce(np.dot, (orboa.T, veff0doo[0]+veff[0], orboa))
+    im0b[:noccb,:noccb] = reduce(np.dot, (orbob.T, veff0doo[1]+veff[1], orbob))
+    im0a[:nocca,:nocca] += lib.einsum('al,ka->lk', veff0mo[noccb:, :nocca], x)
+    im0b[:noccb,:noccb] += lib.einsum('al,ka->lk', veff0mo.T[nocca:, :noccb], y)
+    im0a[nocca:,nocca:] = lib.einsum('jd,jc->dc', veff0mo[:noccb, nocca:], y)
+    im0b[noccb:,noccb:] = lib.einsum('jd,jc->dc', veff0mo.T[:nocca, noccb:], x)
+    im0a[:nocca,nocca:] = lib.einsum('jk,jc->kc', veff0mo[:noccb, :nocca], y) * 2
+    im0b[:noccb,noccb:] = lib.einsum('jk,jc->kc', veff0mo.T[:nocca, :noccb], x) * 2
 
     zeta_a = (mo_energy[0][:, None] + mo_energy[0]) * 0.5
     zeta_b = (mo_energy[1][:, None] + mo_energy[1]) * 0.5
@@ -196,7 +195,7 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     if with_k:
         dm = (oo0a, dmz1dooa+dmz1dooa.T,
               oo0b, dmz1doob+dmz1doob.T)
-        vj, vk = td_grad.get_jk(mol, dm)
+        vj, vk = td_grad.get_jk(mol, dm, hermi=1)
         vj = vj.reshape(2,2,3,nao,nao)
         vk = vk.reshape(2,2,3,nao,nao) * hyb
         vk1 = - td_grad.get_k(mol, (dmt, dmt.T)) * hyb
@@ -207,7 +206,7 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
     else:
         dm = (oo0a, dmz1dooa+dmz1dooa.T,
               oo0b, dmz1doob+dmz1doob.T)
-        vj = td_grad.get_j(mol, dm).reshape(2,2,3,nao,nao)
+        vj = td_grad.get_j(mol, dm, hermi=1).reshape(2,2,3,nao,nao)
         veff1 = vj[0] + vj[1]
         veff1 = np.stack((veff1, veff1))
 
@@ -230,8 +229,6 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
         de[k] = lib.einsum('xpq,pq->x', h1ao, as_dm1)
         de[k] += lib.einsum('xpq,pq->x', veff1a[0,:,p0:p1], oo0a[p0:p1]) * 2
         de[k] += lib.einsum('xpq,pq->x', veff1b[0,:,p0:p1], oo0b[p0:p1]) * 2
-        # de[k] += lib.einsum('xpq,qp->x', veff1a[0,:,p0:p1], oo0a[:,p0:p1])
-        # de[k] += lib.einsum('xpq,qp->x', veff1b[0,:,p0:p1], oo0b[:,p0:p1])
 
         # Excitation energy gradients
         de[k] -= lib.einsum('xpq,pq->x', s1[:,p0:p1], im0[p0:p1])
@@ -244,8 +241,9 @@ def grad_elec(td_grad, x_y, atmlst=None, max_memory=2000, verbose=logger.INFO):
         de[k] += lib.einsum('xij,ij->x', veff1a[1,:,p0:p1], oo0a[p0:p1]) * .5
         de[k] += lib.einsum('xij,ij->x', veff1b[1,:,p0:p1], oo0b[p0:p1]) * .5
 
-        de[k] += lib.einsum('xpq,pq->x', f1vo[1:,p0:p1], dmt[p0:p1]) * 2
-        de[k] += lib.einsum('xqp,pq->x', f1vo[1:,p0:p1], dmt[:,p0:p1]) * 2
+        if td_grad.base.collinear_samples > 0:
+            de[k] += lib.einsum('xpq,pq->x', f1vo[1:,p0:p1], dmt[p0:p1]) * 2
+            de[k] += lib.einsum('xpq,pq->x', f1vo[1:,p0:p1], dmt.T[p0:p1]) * 2
 
         if with_k:
             de[k] += lib.einsum('xpq,pq->x', vk1[0,:,p0:p1], dmt[p0:p1]) * 2
@@ -290,10 +288,12 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
     else:
         k1ao = None
 
-    # create a mc object to use mcfun.
-    nimc = numint2c.NumInt2C()
-    nimc.collinear = 'mcol'
-    nimc.collinear_samples=td_grad.base.collinear_samples
+    if td_grad.base.collinear_samples > 0:
+        # create a mc object to use mcfun.
+        nimc = numint2c.NumInt2C()
+        nimc.collinear = 'mcol'
+        nimc.collinear_samples=td_grad.base.collinear_samples
+        eval_xc_eff = mcfun_eval_xc_adapter_sf(nimc, xc_code)
 
     if xctype == 'HF':
         return f1vo, f1oo, v1ao, k1ao
@@ -315,21 +315,21 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo, dmoo=None, with_vxc=True,
             ao0 = ao
         rho = (ni.eval_rho2(mol, ao0, mo_coeff[0], mo_occ[0], mask, xctype, with_lapl=False),
                ni.eval_rho2(mol, ao0, mo_coeff[1], mo_occ[1], mask, xctype, with_lapl=False))
-        rho_z = np.array([rho[0]+rho[1], rho[0]-rho[1]])
-        eval_xc_eff = mcfun_eval_xc_adapter_sf(nimc, xc_code)
-        fxc_sf, kxc_sf = eval_xc_eff(xc_code, rho_z, deriv, xctype=xctype)[2:4]
-        kxc_sf = np.stack((kxc_sf[:, :, 0] + kxc_sf[:, :, 1],
-                           kxc_sf[:, :, 0] - kxc_sf[:, :, 1]), axis=2)
-        rho1 = ni.eval_rho(mol, ao0, dmvo, mask, xctype, hermi=1, with_lapl=False)
-        if xctype == 'LDA':
-            rho1 = rho1[np.newaxis]
-        wv = lib.einsum('yg,xyg,g->xg', rho1, 2 * fxc_sf, weight) # 2 for f_xx + f_yy
-        fmat_(mol, f1vo, ao, wv, mask, shls_slice, ao_loc)
+        if td_grad.base.collinear_samples > 0:
+            rho_z = np.array([rho[0]+rho[1], rho[0]-rho[1]])
+            fxc_sf, kxc_sf = eval_xc_eff(xc_code, rho_z, deriv, xctype=xctype)[2:4]
+            kxc_sf = np.stack((kxc_sf[:, :, 0] + kxc_sf[:, :, 1],
+                            kxc_sf[:, :, 0] - kxc_sf[:, :, 1]), axis=2)
+            rho1 = ni.eval_rho(mol, ao0, dmvo, mask, xctype, hermi=1, with_lapl=False)
+            if xctype == 'LDA':
+                rho1 = rho1[np.newaxis]
+            wv = lib.einsum('yg,xyg,g->xg', rho1, 2 * fxc_sf, weight) # 2 for f_xx + f_yy
+            fmat_(mol, f1vo, ao, wv, mask, shls_slice, ao_loc)
 
-        if with_kxc:
-            wv = lib.einsum('xg,yg,xyczg,g->czg', rho1, rho1, 2 * kxc_sf, weight)
-            fmat_(mol, k1ao[0], ao, wv[0], mask, shls_slice, ao_loc)
-            fmat_(mol, k1ao[1], ao, wv[1], mask, shls_slice, ao_loc)
+            if with_kxc:
+                wv = lib.einsum('xg,yg,xyczg,g->czg', rho1, rho1, 2 * kxc_sf, weight)
+                fmat_(mol, k1ao[0], ao, wv[0], mask, shls_slice, ao_loc)
+                fmat_(mol, k1ao[1], ao, wv[1], mask, shls_slice, ao_loc)
 
         if dmoo is not None or with_vxc:
             vxc, fxc, kxc = ni.eval_xc_eff(xc_code, rho, deriv=2, spin=1)[1:]
