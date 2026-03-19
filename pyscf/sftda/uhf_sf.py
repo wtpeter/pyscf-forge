@@ -503,11 +503,11 @@ class TDA_SF(TDBase):
 
     _keys = {'extype','collinear_samples'}
 
-    def __init__(self,mf,extype=0,collinear_samples=20):
+    def __init__(self, mf, extype=1, collinear_samples=20):
         TDBase.__init__(self,mf)
         # extype is used to determine which spin flip excitation will be calculated.
         # spin flip up: exytpe=0, spin flip down: exytpe=1.
-        self.extype=extype
+        self.extype = extype
         # collinear_samples controls the 1d spin sample points in TDDFT/TDA.
         self.collinear_samples = collinear_samples
 
