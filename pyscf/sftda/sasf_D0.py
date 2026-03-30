@@ -14,6 +14,7 @@
 # limitations under the License.
 #
 # Spin-Adapted Spin-Flip-Down TDA with Multicollinear Functionals
+# Changed to D^z = 0 in spin-flip kernel
 #
 # Author: Tai Wang <wtpeter@pku.edu.cn>
 # Ref:
@@ -115,7 +116,7 @@ def get_a_sasf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples
                 for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
                     rho0a = make_rho(0, ao, mask, xctype)
                     rho0b = make_rho(1, ao, mask, xctype)
-                    rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                    rho_z = np.array([rho0a + rho0b, np.zeros_like(rho0a - rho0b)]) # D^z = 0
                     fxc_sf = eval_xc_eff(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
                     wfxc = fxc_sf[0, 0] * weight
                     rho_o = lib.einsum('rp,pi->ri', ao, orbo)
@@ -130,7 +131,7 @@ def get_a_sasf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples
                 for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
                     rho0a = make_rho(0, ao, mask, xctype)
                     rho0b = make_rho(1, ao, mask, xctype)
-                    rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                    rho_z = np.array([rho0a + rho0b, np.zeros_like(rho0a - rho0b)]) # D^z = 0
                     fxc_sf = eval_xc_eff(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
                     wfxc = fxc_sf * weight
                     rho_o = lib.einsum('xrp,pi->xri', ao, orbo)
@@ -152,7 +153,7 @@ def get_a_sasf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples
                 for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
                     rho0a = make_rho(0, ao, mask, xctype)
                     rho0b = make_rho(1, ao, mask, xctype)
-                    rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                    rho_z = np.array([rho0a + rho0b, np.zeros_like(rho0a - rho0b)]) # D^z = 0
                     fxc_sf = eval_xc_eff(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
                     wfxc = fxc_sf * weight
                     rho_o = lib.einsum('xrp,pi->xri', ao, orbo)
@@ -285,7 +286,7 @@ def get_a_sasf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples
             for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
                 rho0a = make_rho(0, ao, mask, xctype)
                 rho0b = make_rho(1, ao, mask, xctype)
-                rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                rho_z = np.array([rho0a + rho0b, np.zeros_like(rho0a - rho0b)]) # D^z = 0
                 fxc_sf = eval_xc_eff(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
                 wfxc = 2 * fxc_sf[0, 0] * weight
                 rho_cs = lib.einsum('rp,pi->ri', ao, orbcs)
@@ -314,9 +315,9 @@ def get_a_sasf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples
             for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
                 rho0a = make_rho(0, ao, mask, xctype)
                 rho0b = make_rho(1, ao, mask, xctype)
-                rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                rho_z = np.array([rho0a + rho0b, np.zeros_like(rho0a - rho0b)]) # D^z = 0
                 fxc_sf = eval_xc_eff(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
-                wfxc = 2 * fxc_sf * weight  # 注意这里跟LDA一样，乘上了2
+                wfxc = 2 * fxc_sf * weight
 
                 rho_cs = lib.einsum('xrp,pi->xri', ao, orbcs)
                 rho_os = lib.einsum('xrp,pi->xri', ao, orbos)
@@ -353,7 +354,7 @@ def get_a_sasf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples
             for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
                 rho0a = make_rho(0, ao, mask, xctype)
                 rho0b = make_rho(1, ao, mask, xctype)
-                rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                rho_z = np.array([rho0a + rho0b, np.zeros_like(rho0a - rho0b)]) # D^z = 0
                 fxc_sf = eval_xc_eff(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
                 wfxc = 2 * fxc_sf * weight
 
@@ -524,7 +525,7 @@ def gen_uhf_response_sf_merged(mf, mo_coeff=None, mo_occ=None, hermi=0, collinea
         omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mol.spin)
         hybrid = ni.libxc.is_hybrid_xc(mf.xc)
         if collinear_samples >= 0:
-            fxc = 2.0 * cache_xc_kernel_sf(ni, mol, mf.grids, mf.xc, mo_coeff, mo_occ, deriv=2, spin=1)[2]
+            fxc = 2.0 * cache_xc_kernel_sf(ni, mol, mf.grids, mf.xc, mo_coeff, mo_occ, deriv=2, spin=0)[2] # D^z = 0 (spin=0)
         else:
             fxc = None
     else:

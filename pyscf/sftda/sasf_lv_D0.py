@@ -14,6 +14,7 @@
 # limitations under the License.
 #
 # Spin-Adapted Spin-Flip-Down TDA with Multicollinear Functionals (Lucas Visscher's Scheme)
+# Changed to D^z = 0 in spin-flip and spin-conserving kernel
 #
 # Author: Tai Wang <wtpeter@pku.edu.cn>
 # Ref:
@@ -127,6 +128,7 @@ def get_a_sasf(mf, collinear_samples=20):
             for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
                 rho0a = make_rho(0, ao, mask, xctype)
                 rho0b = make_rho(1, ao, mask, xctype)
+                rho0a = rho0b = 0.5 * (rho0a + rho0b) # D^z = 0
                 rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
                 fxc_sf = eval_xc_eff_sf(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
                 fxc_sc = ni.eval_xc_eff(mf.xc, (rho0a, rho0b), deriv=2, xctype=xctype)[2]

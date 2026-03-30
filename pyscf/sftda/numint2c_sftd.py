@@ -72,7 +72,6 @@ def cache_xc_kernel_sf(self, mol, grids, xc_code, mo_coeff, mo_occ, deriv=2,
     with_lapl = MGGA_DENSITY_LAPL
 
     assert mo_coeff[0].ndim == 2
-    assert spin == 1
 
     nao = mo_coeff[0].shape[0]
     rhoa = []
@@ -87,7 +86,12 @@ def cache_xc_kernel_sf(self, mol, grids, xc_code, mo_coeff, mo_occ, deriv=2,
     rho_ab = np.asarray(rho_ab)
     rho_tmz = np.zeros_like(rho_ab)
     rho_tmz[0] += rho_ab[0]+rho_ab[1]
-    rho_tmz[1] += rho_ab[0]-rho_ab[1]
+    if spin==1:
+        rho_tmz[1] += rho_ab[0]-rho_ab[1]
+    elif spin==0:
+        pass
+    else:
+        raise ValueError('Only spin=0 and spin=1 are supported')
     eval_xc = mcfun_eval_xc_adapter_sf(self,xc_code)
     fxc_sf = eval_xc(xc_code, rho_tmz, deriv=deriv, xctype=xctype)
     return fxc_sf
