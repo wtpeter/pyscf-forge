@@ -38,7 +38,7 @@ from pyscf.dft.gen_grid import NBINS
 from pyscf.dft.numint import _scale_ao_sparse, _dot_ao_ao_sparse, _dot_ao_dm_sparse, _contract_rho_sparse
 from pyscf.tdscf._lr_eig import eigh as lr_eigh
 
-def get_a_sasf(mf, collinear_samples=20):
+def get_a_sasf(mf, collinear_samples=1):
     """
     A_[i,a,j,b]for A_abab
     """

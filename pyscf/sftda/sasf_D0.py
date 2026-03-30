@@ -39,7 +39,7 @@ from pyscf.dft.numint import _scale_ao_sparse, _dot_ao_ao_sparse, _dot_ao_dm_spa
 from pyscf.tdscf._lr_eig import eigh as lr_eigh
 
 
-def get_a_sasf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples=20):
+def get_a_sasf(mf, mo_energy=None, mo_coeff=None, mo_occ=None, collinear_samples=1):
     """
     A_[i,a,j,b]for A_abab
     """
@@ -722,10 +722,10 @@ def nr_rks_fxc1_mgga(ni, mol, grids, xc_code, dms, fxc, max_memory=2000):
 
 
 class TDA_SASF(TDBase):
-    collinear_samples = getattr(__config__, 'tdscf_uhf_sf_SF-TDA_collinear_samples', 20)
+    collinear_samples = getattr(__config__, 'tdscf_uhf_sf_SF-TDA_collinear_samples', 1)
     _keys = {'collinear_samples', 'sftda'}
 
-    def __init__(self, mf, collinear_samples=20):
+    def __init__(self, mf, collinear_samples=1):
         TDBase.__init__(self, mf)
         self.collinear_samples = collinear_samples
         if isinstance(self._scf, dft.KohnShamDFT):
@@ -982,7 +982,7 @@ if __name__ == '__main__':
     mf = mol.ROKS(xc='B3LYP')
     mf.kernel()
     td = TDA_SASF(mf)
-    td.collinear_samples = 20
+    td.collinear_samples = 1
     td.nstates = 5
     td.verbose = 9
     td.kernel()
