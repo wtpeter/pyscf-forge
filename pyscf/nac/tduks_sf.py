@@ -1,6 +1,4 @@
 #!/usr/bin/env python
-
-import copy
 from functools import reduce
 
 import numpy as np
@@ -11,14 +9,13 @@ from pyscf.scf import ucphf
 from pyscf.dft import numint
 from pyscf.dft import numint2c
 from pyscf.grad import rks as rks_grad
-from pyscf.grad import tdrhf as tdrhf_grad
+from pyscf.grad import tduks_sf as tduks_sf_grad
 from pyscf.grad import tdrks as tdrks_grad
 from pyscf.grad import tduks as tduks_grad
 from pyscf.sftda.numint2c_sftd import mcfun_eval_xc_adapter_sf
 
 
-def get_Hellmann_Feymann(td_grad, x_y_I, x_y_J, atmlst=None, max_memory=6000, verbose=logger.INFO,
-                         state_I=None, state_J=None):
+def _get_Hellmann_Feynman_term(td_grad, x_y_I, x_y_J, atmlst=None, max_memory=6000, verbose=logger.INFO):
     """
     Electronic part of spin-flip TDA/TDDFT nuclear gradients.
 
@@ -101,8 +98,10 @@ def get_Hellmann_Feymann(td_grad, x_y_I, x_y_J, atmlst=None, max_memory=6000, ve
     ni.libxc.test_deriv_order(mf.xc, 3, raise_error=True)
     omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mol.spin)
 
-    f1vo_I, f1oo, vxc1, k1ao = _contract_xc_kernel(td_grad, mf.xc, dmt_I, dmt_J, (dmzooa, dmzoob), True, True, max_memory)
-    f1vo_J, _, _, _ = _contract_xc_kernel(td_grad, mf.xc, dmt_J, dmt_I, (dmzooa, dmzoob), True, True, max_memory)
+    f1vo_I, f1oo, vxc1, k1ao = _contract_xc_kernel(
+        td_grad, mf.xc, dmt_I, dmt_J, (dmzooa, dmzoob), True, True, max_memory
+    )
+    f1vo_J, _, _, _ = _contract_xc_kernel(td_grad, mf.xc, dmt_J, dmt_I, (dmzooa, dmzoob), False, False, max_memory)
 
     with_k = ni.libxc.is_hybrid_xc(mf.xc)
     if with_k:
@@ -346,12 +345,14 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo_I, dmvo_J, dmoo=None, with_vxc=Tr
             kxc_sf = np.stack((kxc_sf[:, :, 0] + kxc_sf[:, :, 1], kxc_sf[:, :, 0] - kxc_sf[:, :, 1]), axis=2)
             rho1_I = ni.eval_rho(mol, ao0, dmvo_I, mask, xctype, hermi=1, with_lapl=False)
             if xctype == 'LDA':
-                rho1 = rho1[np.newaxis]
+                rho1_I = rho1_I[np.newaxis]
             wv = lib.einsum('yg,xyg,g->xg', rho1_I, 2 * fxc_sf, weight)
             fmat_(mol, f1vo, ao, wv, mask, shls_slice, ao_loc)
 
             if with_kxc:
                 rho1_J = ni.eval_rho(mol, ao0, dmvo_J, mask, xctype, hermi=1, with_lapl=False)
+                if xctype == 'LDA':
+                    rho1_J = rho1_J[np.newaxis]
                 wv = lib.einsum('xg,yg,xyczg,g->czg', rho1_I, rho1_J, 2 * kxc_sf, weight)
                 fmat_(mol, k1ao[0], ao, wv[0], mask, shls_slice, ao_loc)
                 fmat_(mol, k1ao[1], ao, wv[1], mask, shls_slice, ao_loc)
@@ -387,8 +388,8 @@ def _contract_xc_kernel(td_grad, xc_code, dmvo_I, dmvo_J, dmoo=None, with_vxc=Tr
     return f1vo, f1oo, v1ao, k1ao
 
 
-def nac_csf(td_grad, x_y_I, x_y_J, atmlst=None):
-    '''
+def _get_nac_csf(td_grad, x_y_I, x_y_J, atmlst=None):
+    """
     Compute the CSF (Configuration State Function) contribution to non-adiabatic coupling vectors (NACVs)
     between two spin-flip excited states.
 
@@ -414,12 +415,11 @@ def nac_csf(td_grad, x_y_I, x_y_J, atmlst=None):
         - This term + `get_Hellmann_Feynman` = Full NACV (matches finite difference).
         - The name "CSF" refers to the fact that this term originates from the derivative
           of the CI coefficients in the configuration state function basis.
-    '''
+    """
     mol = td_grad.mol
     mf = td_grad.base._scf
 
     mo_coeff = mf.mo_coeff
-    mo_energy = mf.mo_energy
     mo_occ = mf.mo_occ
     occidxa = np.where(mo_occ[0] > 0)[0]
     occidxb = np.where(mo_occ[1] > 0)[0]
@@ -433,10 +433,6 @@ def nac_csf(td_grad, x_y_I, x_y_J, atmlst=None):
     orbob = mo_coeff[1][:, occidxb]
     orbva = mo_coeff[0][:, viridxa]
     orbvb = mo_coeff[1][:, viridxb]
-    nao = mo_coeff[0].shape[0]
-
-    nmoa = nocca + nvira
-    nmob = noccb + nvirb
 
     if td_grad.base.extype == 0:
         x_ab_I, y_ba_I = x_y_I
@@ -450,20 +446,14 @@ def nac_csf(td_grad, x_y_I, x_y_J, atmlst=None):
         x_ab_J = x_ab_J.T
         x_ba_J = y_ba_J.T
         dvv_a_IJ = np.einsum('ai,bi->ab', x_ab_I, x_ab_J)
-
         dvv_b_IJ = np.einsum('ai,bi->ab', x_ba_I, x_ba_J)
-
         doo_b_IJ = np.einsum('ai,aj->ij', x_ab_I, x_ab_J)
-
         doo_a_IJ = np.einsum('ai,aj->ij', x_ba_I, x_ba_J)
-
         dmzoo_a_IJ = reduce(np.dot, (orboa, doo_a_IJ, orboa.T))
-
         dmzoo_b_IJ = reduce(np.dot, (orbob, doo_b_IJ, orbob.T))
-
         dmzoo_a_IJ += reduce(np.dot, (orbva, dvv_a_IJ, orbva.T))
-
         dmzoo_b_IJ += reduce(np.dot, (orbvb, dvv_b_IJ, orbvb.T))
+
     elif td_grad.base.extype == 1:
         x_ba_I, y_ab_I = x_y_I
         x_ba_J, y_ab_J = x_y_J
@@ -476,19 +466,12 @@ def nac_csf(td_grad, x_y_I, x_y_J, atmlst=None):
         x_ab_J = y_ab_J.T
         x_ba_J = x_ba_J.T
         dvv_a_IJ = np.einsum('ai,bi->ab', x_ab_I, x_ab_J)
-
         dvv_b_IJ = np.einsum('ai,bi->ab', x_ba_I, x_ba_J)
-
         doo_b_IJ = np.einsum('ai,aj->ij', x_ab_I, x_ab_J)
-
         doo_a_IJ = np.einsum('ai,aj->ij', x_ba_I, x_ba_J)
-
         dmzoo_a_IJ = reduce(np.dot, (orboa, doo_a_IJ, orboa.T))
-
         dmzoo_b_IJ = reduce(np.dot, (orbob, doo_b_IJ, orbob.T))
-
         dmzoo_a_IJ += reduce(np.dot, (orbva, dvv_a_IJ, orbva.T))
-
         dmzoo_b_IJ += reduce(np.dot, (orbvb, dvv_b_IJ, orbvb.T))
 
     mf_grad = td_grad.base._scf.nuc_grad_method()
@@ -506,140 +489,68 @@ def nac_csf(td_grad, x_y_I, x_y_J, atmlst=None):
     return nac_csf
 
 
-def as_scanner(NACClass):
-    class Scanner(NACClass):
-        def __call__(self, mol):
-            td_obj = self.base
-            mf_obj = td_obj._scf
-            if np.allclose(mf_obj.mol.atom_coords(), mol.atom_coords()):
-                return self.kernel()
-
-            logger.info(self, 'New geometry detected. Recalculating SCF and TDDFT.')
-            mf_obj.reset(mol)
-            mf_obj.kernel()
-            td_obj.reset(mol)
-            td_obj.kernel()
-            return self.kernel()
-
-    return Scanner
+def get_nacv_ee(td_nac, x_y_I, x_y_J, E_I, E_J, atmlst=None, verbose=logger.INFO):
+    de_etf = _get_Hellmann_Feynman_term(td_nac, x_y_I, x_y_J, atmlst=atmlst, verbose=verbose)
+    delta_e = E_J - E_I
+    de = de_etf + _get_nac_csf(td_nac, x_y_I, x_y_J, atmlst=atmlst) * delta_e
+    if abs(delta_e) < 1e-10:
+        logger.warn(td_nac, 'Energy difference is very small: %s. NAC is not energy scaled.', delta_e)
+        de_scaled = de.copy()
+        de_etf_scaled = de_etf.copy()
+    else:
+        de_scaled = de / delta_e
+        de_etf_scaled = de_etf / delta_e
+    return de, de_scaled, de_etf, de_etf_scaled
 
 
-def _dot_amplitude_block(a, b):
-    if isinstance(a, np.ndarray) and isinstance(b, np.ndarray):
-        return np.dot(a.ravel(), b.ravel())
-    return 0.0
-
-
-def _scale_amplitude_block(a, factor):
-    if isinstance(a, np.ndarray):
-        return a * factor
-    return a
-
-
-class NonAdiabaticCouplings(tdrhf_grad.Gradients):
-    cphf_max_cycle = tdrhf_grad.Gradients.cphf_max_cycle + 20
+class NAC(tduks_sf_grad.Gradients):
+    _keys = {'states', 'de_scaled', 'de_etf', 'de_etf_scaled'}
 
     def __init__(self, td):
         super().__init__(td)
-        self.state_I = None
-        self.state_J = None
-        self.ediff = False
-        self.use_etfs = False
-        self.x_y_I_prev = None
-        self.x_y_J_prev = None
-        self._keys = self._keys.union({'state_I', 'state_J', 'ediff', 'use_etfs'})
+        self.states = (1, 2)
+        self.de_scaled = None
+        self.de_etf = None
+        self.de_etf_scaled = None
 
-    def dump_flags(self, verbose=None):
-        super().dump_flags(verbose)
-        log = logger.new_logger(self, verbose)
-        log.info('State I = %s', self.state_I)
-        log.info('State J = %s', self.state_J)
-        log.info('ediff = %s', self.ediff)
-        log.info('use_etfs = %s', self.use_etfs)
-        return self
+    @lib.with_doc(get_nacv_ee.__doc__)
+    def get_nacv_ee(self, x_y_I, x_y_J, E_I, E_J, atmlst=None, verbose=logger.INFO):
+        return get_nacv_ee(self, x_y_I, x_y_J, E_I, E_J, atmlst=atmlst, verbose=verbose)
 
-    def _vector_dot(self, vec1, vec2):
-        x1, y1 = vec1
-        x2, y2 = vec2
-        dot_x = _dot_amplitude_block(x1, x2)
-        dot_y = _dot_amplitude_block(y1, y2)
-        return dot_x - dot_y
-
-    def _scale_vector(self, vec, factor):
-        x, y = vec
-        return (_scale_amplitude_block(x, factor), _scale_amplitude_block(y, factor))
-
-    def compute_nac(self, state_I=None, state_J=None, atmlst=None, ediff=None, use_etfs=None, use_cache=True):
-        state_I = state_I if state_I is not None else self.state_I
-        state_J = state_J if state_J is not None else self.state_J
-        ediff = self.ediff if ediff is None else ediff
-        use_etfs = self.use_etfs if use_etfs is None else use_etfs
-
-        if state_I is None or state_J is None:
-            raise RuntimeError('state_I and state_J must be specified')
-
-        raw_x_y_I = self.base.xy[state_I - 1]
-        raw_x_y_J = self.base.xy[state_J - 1]
-        e_I = self.base.e[state_I - 1]
-        e_J = self.base.e[state_J - 1]
-
-        if self.x_y_I_prev is not None and self._vector_dot(raw_x_y_I, self.x_y_I_prev) < 0:
-            logger.debug(self, 'Flipping sign of state I due to phase change.')
-            raw_x_y_I = self._scale_vector(raw_x_y_I, -1.0)
-        self.x_y_I_prev = copy.deepcopy(raw_x_y_I)
-
-        if self.x_y_J_prev is not None and self._vector_dot(raw_x_y_J, self.x_y_J_prev) < 0:
-            logger.debug(self, 'Flipping sign of state J due to phase change.')
-            raw_x_y_J = self._scale_vector(raw_x_y_J, -1.0)
-        self.x_y_J_prev = copy.deepcopy(raw_x_y_J)
-
-        hf_term = get_Hellmann_Feymann(self, raw_x_y_I, raw_x_y_J, atmlst=atmlst, state_I=state_I, state_J=state_J)
-        if use_etfs:
-            nac = hf_term
+    def kernel(self, states=None, atmlst=None):
+        if atmlst is None:
+            atmlst = self.atmlst
         else:
-            nac = hf_term + nac_csf(self, raw_x_y_I, raw_x_y_J, atmlst) * (e_J - e_I)
-
-        if ediff:
-            delta_e = e_J - e_I
-            if abs(delta_e) < 1e-10:
-                logger.warn(self, 'Energy difference is very small: %s. NAC not divided.', delta_e)
-            else:
-                nac = nac / delta_e
-        return nac
-
-    def kernel(self, state_I=None, state_J=None, atmlst=None, ediff=None, use_etfs=None, use_cache=True):
-        if state_I is not None:
-            self.state_I = state_I
-        if state_J is not None:
-            self.state_J = state_J
-        if atmlst is not None:
             self.atmlst = atmlst
-        if ediff is not None:
-            self.ediff = ediff
-        if use_etfs is not None:
-            self.use_etfs = use_etfs
 
-        self.nac = self.compute_nac(
-            state_I=self.state_I,
-            state_J=self.state_J,
-            atmlst=getattr(self, 'atmlst', None),
-            ediff=self.ediff,
-            use_etfs=self.use_etfs,
-            use_cache=use_cache,
+        if states is None:
+            states = self.states
+        else:
+            self.states = states
+        I, J = sorted(map(int, states))
+
+        nstates = len(self.base.e)
+        if I == J:
+            raise ValueError('I and J should be different.')
+        if I <= 0 or J <= 0:
+            raise ValueError('Excited states ID should be positive integers.')
+        if I > nstates or J > nstates:
+            raise ValueError(f'Excited state exceeds the number of states {nstates}.')
+
+        xy_I = self.base.xy[I - 1]
+        E_I = self.base.e[I - 1]
+        xy_J = self.base.xy[J - 1]
+        E_J = self.base.e[J - 1]
+
+        self.de, self.de_scaled, self.de_etf, self.de_etf_scaled = self.get_nacv_ee(
+            xy_I, xy_J, E_I, E_J, atmlst, verbose=self.verbose
         )
-        return self.nac
-
-    def reset_phase(self):
-        self.x_y_I_prev = None
-        self.x_y_J_prev = None
-        return self
+        return self.de, self.de_scaled, self.de_etf, self.de_etf_scaled
 
     as_scanner = as_scanner
 
 
-NAC = NonAdiabaticCouplings
-
 from pyscf import sftda
 
-sftda.uks_sf.TDA_SF.NAC = sftda.uks_sf.TDDFT_SF.NAC = lib.class_as_method(NonAdiabaticCouplings)
+sftda.uks_sf.TDA_SF.NAC = sftda.uks_sf.TDDFT_SF.NAC = lib.class_as_method(NAC)
 sftda.uks_sf.TDA_SF.nac_method = sftda.uks_sf.TDDFT_SF.nac_method = sftda.uks_sf.TDA_SF.NAC
