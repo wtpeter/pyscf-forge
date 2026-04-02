@@ -130,7 +130,7 @@ def get_a_sasf(mf, collinear_samples=1):
                 rho0b = make_rho(1, ao, mask, xctype)
                 rho0a = rho0b = 0.5 * (rho0a + rho0b) # D^z = 0
                 rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
-                fxc_sf = eval_xc_eff_sf(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
+                fxc_sf = 2.0 * eval_xc_eff_sf(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
                 fxc_sc = ni.eval_xc_eff(mf.xc, (rho0a, rho0b), deriv=2, xctype=xctype)[2]
                 wfxc_sf = fxc_sf[0, 0] * weight
                 wfxc_sc = fxc_sc[:,0,:,0] * weight
