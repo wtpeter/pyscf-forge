@@ -557,6 +557,8 @@ def gen_uhf_response_sf_merged(mf, mo_coeff=None, mo_occ=None, hermi=0, collinea
                     v1ao1 = nr_rks_fxc1_gga(in2, mol, mf.grids, mf.xc, dms1, fxc, max_memory=max_memory)
                 elif xctype == 'MGGA':
                     v1ao1 = nr_rks_fxc1_mgga(in2, mol, mf.grids, mf.xc, dms1, fxc, max_memory=max_memory)
+                elif xctype == 'HF':
+                    v1ao1 = np.zeros_like(dms1)
 
             if hybrid:
                 if omega == 0:
