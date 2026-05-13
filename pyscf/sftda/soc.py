@@ -2,6 +2,7 @@ import numpy as np
 from sympy import S
 from sympy.physics.quantum.cg import CG
 from pyscf import gto, lib, sftda
+from pyscf.lib import logger
 from pyscf.scf.jk import get_jk
 from pyscf.data.nist import HARTREE2WAVENUMBER, LIGHT_SPEED, HARTREE2EV
 
@@ -313,7 +314,7 @@ def calc_ao_soc_2e_direct(mf):
     # 如果需要保证 output 结构一致，可以加上 return
     return np.array([soc_somf_m1, soc_somf_0, soc_somf_1])
 
-def calc_soc(soc_ao, mf, xy1, xy2, s1, s2):
+def calc_soc(soc_ao, mf, xy1, xy2, s1, s2, log=None):
     sz = 0.5 * mf.mol.spin - 1
 
     mo_coeff = mf.mo_coeff
@@ -344,10 +345,13 @@ def calc_soc(soc_ao, mf, xy1, xy2, s1, s2):
         gamma_vv_aa = lib.einsum('ia,ib->ab', my.conj(), ny)
         gamma_aa += lib.einsum('ub,va,ab->vu', orbva.conj(), orbva, gamma_vv_aa)
 
-    print(f'Clebsch-Gordan coefficient: <{s2:.1f},{sz:.1f};{1:.1f},{0:.1f}|{s1:.1f},{sz:.1f}>={cg(s2, sz, 1, 0, s1, sz):.3f}')
-    if abs(cg(s2, sz, 1, 0, s1, sz))<1e-8:
+    cg_coeff = cg(s2, sz, 1, 0, s1, sz)
+    if log is not None:
+        log.info('Clebsch-Gordan coefficient: <%3.1f,%3.1f;%3.1f,%3.1f|%3.1f,%3.1f> = %.3f',
+                  s2, sz, 1., 0., s1, sz, cg_coeff)
+    if abs(cg_coeff)<1e-8:
         return np.zeros((int(2*s1)+1, int(2*s2)+1), dtype=np.complex128)
-    gamma = (gamma_aa - gamma_bb) / np.sqrt(2) / cg(s2, sz, 1, 0, s1, sz)
+    gamma = (gamma_aa - gamma_bb) / np.sqrt(2) / cg_coeff
     result = np.zeros((int(2*s1)+1, int(2*s2)+1), dtype=np.complex128)
     for m1 in np.arange(-s1, s1+1):
         for m2 in np.arange(-s2, s2+1):
@@ -365,136 +369,134 @@ def calc_soc(soc_ao, mf, xy1, xy2, s1, s2):
                 result[int(m1+s1), int(m2+s2)] = tmp
     return result
 
-def print_pretty_soc(matrix, s1, s2):
+def _get_soc_ao(mf, soctype):
+    mol = mf.mol
+    if soctype == 'SOMF':
+        soc_ao = calc_ao_soc_1e(mol, Z='one')
+        soc_ao += calc_ao_soc_2e_direct(mf)
+    elif soctype == 'Zeff':
+        soc_ao = calc_ao_soc_1e(mol, Z='orca')
+    elif soctype == '1e':
+        soc_ao = calc_ao_soc_1e(mol, Z='one')
+    elif soctype == 'X2CAMF':
+        soc_ao = calc_ao_soc_1e_x2camf(mol)
+    elif soctype == 'X2CAMF_XRESP':
+        soc_ao = calc_ao_soc_1e_x2camf_xresp(mol)
+    else:
+        raise ValueError(f'soctype={soctype} is not supported.')
+    return soc_ao
+
+def _spin_from_s2(s2):
+    return round(-1 + np.sqrt(1 + 4 * s2)) / 2
+
+
+def _format_pretty_soc_lines(matrix, s1, s2):
     """
-    格式化打印 SOC 矩阵，自动生成 Sz 标签并对齐。
-    
+    Format SOC matrix elements with Sz labels.
+
     Args:
-        matrix: np.array, dtype=complex128, 形状应为 (2*s1+1, 2*s2+1)
-        s1: float, 左矢 (Bra) 的总自旋 S (用于行)
-        s2: float, 右矢 (Ket) 的总自旋 S (用于列)
+        matrix: np.array, dtype=complex128, shape should be (2*s1+1, 2*s2+1)
+        s1: float, total spin S for bra states (rows)
+        s2: float, total spin S for ket states (columns)
     """
-    # 1. 计算维度并检查
     n_rows = int(2 * s1 + 1)
     n_cols = int(2 * s2 + 1)
-    
-    if matrix.shape != (n_rows, n_cols):
-        print(f"Warning: Matrix shape {matrix.shape} mismatch with spins S1={s1}, S2={s2} (expected {n_rows}x{n_cols})")
-        return
 
-    # 2. 生成 Sz 序列 (假设顺序是从 -S 到 +S，与你给的例子一致)
-    # 使用 linspace 确保浮点数精度，例如 -1.5, -0.5, 0.5, 1.5
+    if matrix.shape != (n_rows, n_cols):
+        return [f'Warning: Matrix shape {matrix.shape} mismatch with spins '
+                f'S1={s1}, S2={s2} (expected {n_rows}x{n_cols})']
+
     row_sz_vals = np.linspace(-s1, s1, n_rows)
     col_sz_vals = np.linspace(-s2, s2, n_cols)
 
-    # 3. 定义格式化参数
-    # col_width: 每一列数据的总宽度，根据 (0.000000, 0.000000) 的长度预估，留足余量
-    col_width = 25 
-    # label_width: 行首标签的宽度
-    label_width = 16 
-    
-    # 4. 打印表头 (列标签)
-    # 先打印行标签占位的空白
-    header = " " * label_width
-    for sz in col_sz_vals:
-        # 格式化 Sz 标签，居中对齐
-        header += f"|Sz={sz:5.2f}>".center(col_width)
-    
-    print("Actual matrix elements:")
-    print(header)
-    print("-" * len(header)) # 打印一条分割线，更美观
+    col_width = 25
+    label_width = 16
 
-    # 5. 打印每一行
+    header = ' ' * label_width
+    for sz in col_sz_vals:
+        header += f'|Sz={sz:5.2f}>'.center(col_width)
+
+    lines = ['Actual matrix elements (cm^-1):', header, '-' * len(header)]
+
     for i, row_sz in enumerate(row_sz_vals):
-        # 构造行首标签: <Sz=...|
-        row_str = f"<Sz={row_sz:5.2f}|".ljust(label_width)
-        
+        row_str = f'<Sz={row_sz:5.2f}|'.ljust(label_width)
+
         for j in range(n_cols):
             val = matrix[i, j]
-            # 格式化复数: (实部, 虚部)
-            # {val.real:9.6f}: 
-            #   9 表示数字最小占9位(含符号和小数点)，确保对齐
-            #   .6f 表示保留6位小数
-            #   如果数字很小是 -0.000000，这种格式能保证宽度一致
-            val_str = f"({val.real:9.6f},{val.imag:9.6f})"
-            
-            # 将数值字符串在列宽内居中
+            val_str = f'({val.real:9.6f},{val.imag:9.6f})'
             row_str += val_str.center(col_width)
-        
-        print(row_str)
 
-def analyze_soc(td, soctype='SOMF'):
+        lines.append(row_str)
+    return lines
+
+
+def _log_pretty_soc(log, matrix, s1, s2):
+    for line in _format_pretty_soc_lines(matrix, s1, s2):
+        log.info(line)
+
+
+def print_pretty_soc(matrix, s1, s2, verbose=logger.INFO):
+    """Format and log SOC matrix elements with Sz labels."""
+    log = logger.Logger(verbose=verbose)
+    for line in _format_pretty_soc_lines(matrix, s1, s2):
+        log.info(line)
+
+
+def analyze_soc(td, soctype='SOMF', verbose=None):
     '''
     td: an instance of pyscf.sftda.TDA_SF
     '''
+    log = logger.new_logger(td, verbose)
+    cpu0 = (logger.process_clock(), logger.perf_counter())
 
-    if soctype == 'SOMF':
-        soc_ao = calc_ao_soc_1e(td._scf.mol, Z='one')
-        soc_ao += calc_ao_soc_2e_direct(td._scf)
-    elif soctype == 'Zeff':
-        soc_ao = calc_ao_soc_1e(td._scf.mol, Z='orca')
-    elif soctype == '1e':
-        soc_ao = calc_ao_soc_1e(td._scf.mol, Z='one')
-    elif soctype == 'X2CAMF':
-        soc_ao =  calc_ao_soc_1e_x2camf(td._scf.mol)
-    elif soctype == 'X2CAMF_XRESP':
-        soc_ao =  calc_ao_soc_1e_x2camf_xresp(td._scf.mol)
-    else:
-        raise ValueError(f"soctype={soctype} is not supported.")
+    soc_ao = _get_soc_ao(td._scf, soctype)
+    cpu0 = log.timer(f'{soctype} SOC AO integrals', *cpu0)
 
     ss = td.spin_square()
     for ket in range(td.nstates):
         for bra in range(ket+1, td.nstates):
-            print(f'SOC Matrix Element between State {bra+1} and State {ket+1}:')
+            log.note('SOC matrix elements between states %d and %d', bra+1, ket+1)
             s21 = ss[bra]
             s22 = ss[ket]
-            s1 = round(-1 + np.sqrt(1 + 4 * s21)) / 2
-            s2 = round(-1 + np.sqrt(1 + 4 * s22)) / 2
-            print(f'Spin S values: Bra State {bra+1}: S={s1}({s21:.4f}), Ket State {ket+1}: S={s2}({s22:.4f})')
-            soc_mat = calc_soc(soc_ao, td._scf, td.xy[bra], td.xy[ket], s1, s2)
-            print_pretty_soc(soc_mat * HARTREE2WAVENUMBER, s1, s2)
-            print(f'SOCC = {np.linalg.norm(soc_mat) * HARTREE2WAVENUMBER}')
-            print()
+            s1 = _spin_from_s2(s21)
+            s2 = _spin_from_s2(s22)
+            log.note('Bra state %d: S=%s  <S^2>=%.4f; Ket state %d: S=%s  <S^2>=%.4f',
+                     bra+1, s1, s21, ket+1, s2, s22)
+            soc_mat = calc_soc(soc_ao, td._scf, td.xy[bra], td.xy[ket], s1, s2, log=log)
+            _log_pretty_soc(log, soc_mat * HARTREE2WAVENUMBER, s1, s2)
+            log.note('SOCC(states %d, %d) = %.6f cm^-1',
+                     bra+1, ket+1, np.linalg.norm(soc_mat) * HARTREE2WAVENUMBER)
+            log.note('')
 
-def build_and_diagonalize_soc(td, soctype='SOMF', verbose=True):
+    log.timer('SOC analysis', *cpu0)
+
+
+def build_and_diagonalize_soc(td, soctype='SOMF', verbose=None):
     '''
-    构建完整的SOC哈密顿量并对角化
-    td: pyscf.sftda.TDA_SF 实例
+    Build the full SOC Hamiltonian and diagonalize it.
+    td: pyscf.sftda.TDA_SF instance
     '''
-    
-    # 1. 准备 SOC 积分
-    if soctype == 'SOMF':
-        soc_ao = calc_ao_soc_1e(td._scf.mol, Z='one')
-        soc_ao += calc_ao_soc_2e_direct(td._scf)
-    elif soctype == 'Zeff':
-        soc_ao = calc_ao_soc_1e(td._scf.mol, Z='orca')
-    elif soctype == '1e':
-        soc_ao = calc_ao_soc_1e(td._scf.mol, Z='one')
-    elif soctype == 'X2CAMF':
-        soc_ao =  calc_ao_soc_1e_x2camf(td._scf.mol)
-    elif soctype == 'X2CAMF_XRESP':
-        soc_ao =  calc_ao_soc_1e_x2camf_xresp(td._scf.mol)
-    else:
-        raise ValueError(f"soctype={soctype} is not supported.")
+    log = logger.new_logger(td, verbose)
+    cpu0 = (logger.process_clock(), logger.perf_counter())
+
+    soc_ao = _get_soc_ao(td._scf, soctype)
+    cpu0 = log.timer(f'{soctype} SOC AO integrals', *cpu0)
 
     nstates = td.nstates
-    
-    # 2. 预计算每个态的自旋 S 和在总矩阵中的索引偏移量
-    state_info = [] # 存储 (S值, start_index, end_index, energy)
+
+    state_info = []  # spin, block offsets, and scalar-state energies
     current_idx = 0
-    
-    print("Pre-calculating state spins and dimensions...")
+
+    log.info('Precomputing spin subspaces and block offsets...')
+    ss = td.spin_square()
     for i in range(nstates):
-        # 计算 S^2 和 S
-        s2_val = td.spin_square()[i]
-        s_val = round(-1 + np.sqrt(1 + 4 * s2_val)) / 2
-        
-        # 确定该态的子空间维度 (2S+1)
+        s2_val = ss[i]
+        s_val = _spin_from_s2(s2_val)
+
         dim = int(2 * s_val + 1)
-        
-        # 获取该态的能量 (Hartree)
+
         energy = td.e_tot[i]
-        
+
         state_info.append({
             'state_id': i,
             's': s_val,
@@ -504,78 +506,61 @@ def build_and_diagonalize_soc(td, soctype='SOMF', verbose=True):
             'energy': energy
         })
         current_idx += dim
-        
+
     total_dim = current_idx
-    print(f"Total Hamiltonian dimension: {total_dim} x {total_dim}")
-    
-    # 3. 初始化大哈密顿量 (复数矩阵)
-    # 单位：Hartree
+    log.info('Total Hamiltonian dimension: %d x %d', total_dim, total_dim)
+
     H_soc = np.zeros((total_dim, total_dim), dtype=np.complex128)
-    
-    # 4. 填充矩阵
-    # 4.1 填充对角块 (零级能量)
+
     for info in state_info:
-        # 对角线上加上激发能 E_I * Identity
-        # 注意：这里我们只加能量，如果同态内部有SOC分裂(如零场分裂)，
-        # 需要计算 calc_soc(..., state_i, state_i, ...) 并加到对角块。
-        # 通常简单处理时，只考虑态间耦合，对角块仅为能量。
+        # Only scalar-state energies are included on the diagonal.
         idx_slice = slice(info['start'], info['end'])
         H_soc[idx_slice, idx_slice] = np.eye(info['dim']) * info['energy']
 
-    # 4.2 填充非对角块 (SOC 耦合)
-    # 你的 calc_soc 假设 bra 和 ket 不同。
     for i in range(nstates):
         for j in range(i + 1, nstates):
-            bra_info = state_info[j] # 行索引对应 Bra
-            ket_info = state_info[i] # 列索引对应 Ket
-            
-            # 调用你写好的函数计算块矩阵
-            # 注意参数顺序：(soc_ao, mf, xy_bra, xy_ket, s_bra, s_ket)
-            # 你的函数定义是 xy1(bra), xy2(ket), s1(bra), s2(ket)
-            sub_mat = calc_soc(soc_ao, td._scf, 
-                               td.xy[j], td.xy[i], 
-                               bra_info['s'], ket_info['s'])
-            print_pretty_soc(sub_mat * HARTREE2WAVENUMBER, bra_info['s'], ket_info['s'])
-            print(f'SOCC = {np.linalg.norm(sub_mat) * HARTREE2WAVENUMBER}')
-            
-            # 填入上三角
+            bra_info = state_info[j]
+            ket_info = state_info[i]
+
+            sub_mat = calc_soc(soc_ao, td._scf,
+                               td.xy[j], td.xy[i],
+                               bra_info['s'], ket_info['s'], log=log)
+            log.info('SOC matrix elements between states %d and %d', j+1, i+1)
+            _log_pretty_soc(log, sub_mat * HARTREE2WAVENUMBER, bra_info['s'], ket_info['s'])
+            log.note('SOCC(states %d, %d) = %.6f cm^-1',
+                     j+1, i+1, np.linalg.norm(sub_mat) * HARTREE2WAVENUMBER)
+
             H_soc[bra_info['start']:bra_info['end'], ket_info['start']:ket_info['end']] = sub_mat
-            
-            # 填入下三角 (厄米共轭)
+
             H_soc[ket_info['start']:ket_info['end'], bra_info['start']:bra_info['end']] = sub_mat.conj().T
 
-    # 5. 对角化
-    print("Diagonalizing SOC Hamiltonian...")
+    cpu0 = log.timer('SOC Hamiltonian construction', *cpu0)
+
+    log.info('Diagonalizing the SOC Hamiltonian...')
     eigvals, eigvecs = np.linalg.eigh(H_soc)
-    
-    # 6. 结果分析与打印
-    if verbose:
-        print("\n" + "="*60)
-        print("SOC States Analysis")
-        print("="*60)
-        
-        # 找到基态能量作为参考 (通常是 H_soc 的最小本征值，或者原始 SCF 能量)
-        # 这里我们展示相对于最低 SOC 态的相对能量
-        min_e = np.min(eigvals)
-        
-        for idx, e in enumerate(eigvals):
-            # 能量转换为 cm-1
-            rel_e_cm = (e - min_e) * HARTREE2WAVENUMBER
-            
-            print(f"SOC State {idx+1}: E = {(e-min_e)*HARTREE2EV:.6f} eV (Rel: {rel_e_cm:.2f} cm^-1)")
-            
-            # 分析成分
-            vec = eigvecs[:, idx]
-            norm_sq = np.abs(vec)**2
-            
-            # 找出主要贡献的无SOC态
-            # 我们需要把系数按照态进行归并 (sum over Ms)
-            print("  Composition:")
-            for info in state_info:
-                # 该电子态所有 Ms 分量的概率和
-                prob = np.sum(norm_sq[info['start']:info['end']])
-                if prob > 0.01: # 只打印贡献大于 1% 的态
-                    print(f"    {prob*100:5.1f}% from Scalar State {info['state_id']+1} (S={info['s']})")
-            print("-" * 30)
+    cpu0 = log.timer('SOC Hamiltonian diagonalization', *cpu0)
+
+    log.note('')
+    log.note('%s', '='*60)
+    log.note('Spin-orbit-coupled eigenstates')
+    log.note('%s', '='*60)
+
+    min_e = np.min(eigvals)
+
+    for idx, e in enumerate(eigvals):
+        rel_e_cm = (e - min_e) * HARTREE2WAVENUMBER
+        rel_e_ev = (e - min_e) * HARTREE2EV
+
+        log.note('State %d: Delta E = %.2f cm^-1  (%.6f eV)', idx+1, rel_e_cm, rel_e_ev)
+
+        vec = eigvecs[:, idx]
+        norm_sq = np.abs(vec)**2
+
+        log.info('  Dominant scalar-state contributions:')
+        for info in state_info:
+            prob = np.sum(norm_sq[info['start']:info['end']])
+            if prob > 0.01:
+                log.info('    %5.1f%% from scalar state %d (S=%s)', prob*100, info['state_id']+1, info['s'])
+        log.info('%s', '-' * 30)
 
     return eigvals, eigvecs, H_soc
