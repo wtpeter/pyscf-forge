@@ -740,6 +740,357 @@ def get_a_sasf_m1(mf, mo_coeff=None, mo_occ=None, collinear_samples=20, with_oo=
     return a
 
 
+def get_a_sasf_m2(mf, mo_coeff=None, mo_occ=None, collinear_samples=20, with_oo=True, Dz0=True):
+    """Method 2: use m1 blocks except rows/columns coupled to CV(0), which are taken from m0."""
+    if mo_coeff is None:
+        mo_coeff = mf.mo_coeff
+    if mo_occ is None:
+        mo_occ = mf.mo_occ
+
+    a0 = get_a_sasf_m0(
+        mf, mo_coeff=mo_coeff, mo_occ=mo_occ, collinear_samples=collinear_samples,
+        with_oo=with_oo, Dz0=Dz0)
+    a1 = get_a_sasf_m1(
+        mf, mo_coeff=mo_coeff, mo_occ=mo_occ, collinear_samples=collinear_samples,
+        with_oo=with_oo, Dz0=Dz0)
+
+    ncs = np.count_nonzero(mo_occ == 2)
+    nos = np.count_nonzero(mo_occ == 1)
+    nvs = np.count_nonzero(mo_occ == 0)
+    co = ncs * nos
+    cv = ncs * nvs
+    ov = nos * nvs
+
+    cv0_start = co + cv + 1 + ov
+    a = a1.copy()
+    a[cv0_start:, :] = a0[cv0_start:, :]
+    a[:, cv0_start:] = a0[:, cv0_start:]
+
+    assert abs(a - a.T).max() < 1e-10
+    return a
+
+
+def get_a_sasf_m4(mf, mo_coeff=None, mo_occ=None, collinear_samples=20, with_oo=True, Dz0=True):
+    # assert isinstance(mf, dft.roks.ROKS)
+    if mo_coeff is None:
+        mo_coeff = mf.mo_coeff
+    if mo_occ is None:
+        mo_occ = mf.mo_occ
+
+    mol = mf.mol
+    nao, nmo = mo_coeff.shape
+    si = (mol.nelec[0] - mol.nelec[1]) * 0.5
+    # assert si >= 1, 'SASFTDA only supports case that Sf=Si>=1.'
+
+    csidx = np.where(mo_occ == 2)[0]
+    osidx = np.where(mo_occ == 1)[0]
+    vsidx = np.where(mo_occ == 0)[0]
+    orbcs = mo_coeff[:, csidx]
+    orbos = mo_coeff[:, osidx]
+    orbvs = mo_coeff[:, vsidx]
+    ncs = orbcs.shape[1]
+    nos = orbos.shape[1]
+    nvs = orbvs.shape[1]
+
+    vresp = gen_uhf_response_sf(mf.to_uks(), hermi=1, Dz0=Dz0, collinear_samples=collinear_samples)
+    dmoo = orbos @ orbos.T
+    delta = vresp(dmoo)
+
+    fock = mf.get_fock()
+    focka = fock.focka
+    fockb = focka - delta
+    fock0 = 0.5 * (focka + fockb)
+    fockz = 0.5 * (focka - fockb)
+
+    ni = mf._numint
+    ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
+    omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mol.spin)
+    hybrid = ni.libxc.is_hybrid_xc(mf.xc)
+
+    a_cv0cv0 = np.zeros((ncs, nvs, ncs, nvs))
+    a_cvcv = np.zeros((ncs, nvs, ncs, nvs))
+    a_coco = np.zeros((ncs, nos, ncs, nos))
+    a_ovov = np.zeros((nos, nvs, nos, nvs))
+    a_cvco = np.zeros((ncs, nvs, ncs, nos))
+    a_cvov = np.zeros((ncs, nvs, nos, nvs))
+    a_coov = np.zeros((ncs, nos, nos, nvs))
+    a_cv0cv = np.zeros((ncs, nvs, ncs, nvs))
+    a_cv0co = np.zeros((ncs, nvs, ncs, nos))
+    a_cv0ov = np.zeros((ncs, nvs, nos, nvs))
+
+    fockz_cc = orbcs.T @ fockz @ orbcs
+    fockz_vv = orbvs.T @ fockz @ orbvs
+    fockb_vo = orbvs.T @ fockb @ orbos
+    focka_oc = orbos.T @ focka @ orbcs
+    fockb_oo = orbos.T @ fockb @ orbos
+    fockb_cc = orbcs.T @ fockb @ orbcs
+    focka_vv = orbvs.T @ focka @ orbvs
+    focka_oo = orbos.T @ focka @ orbos
+    fock0_vv = orbvs.T @ fock0 @ orbvs
+    fock0_cc = orbcs.T @ fock0 @ orbcs
+
+    a_cv0cv0 += lib.einsum('ij,ab->iajb', np.eye(ncs), fock0_vv)
+    a_cv0cv0 -= lib.einsum('ab,ji->iajb', np.eye(nvs), fock0_cc)
+    a_cvcv = a_cv0cv0.copy()
+    a_cvcv -= lib.einsum('ij,ab->iajb', np.eye(ncs), fockz_vv) / si
+    a_cvcv -= lib.einsum('ab,ji->iajb', np.eye(nvs), fockz_cc) / si
+    a_cvco += lib.einsum('ij,av->iajv', np.eye(ncs), fockb_vo) * np.sqrt((si + 1) / (2 * si))
+    a_cvov -= lib.einsum('ab,vi->iavb', np.eye(nvs), focka_oc) * np.sqrt((si + 1) / (2 * si))
+    a_coco += lib.einsum('ij,uv->iujv', np.eye(ncs), fockb_oo)
+    a_coco -= lib.einsum('uv,ji->iujv', np.eye(nos), fockb_cc)
+    a_ovov += lib.einsum('uv,ab->uavb', np.eye(nos), focka_vv)
+    a_ovov -= lib.einsum('ab,vu->uavb', np.eye(nvs), focka_oo)
+    a_cv0cv -= lib.einsum('ij,ab->iajb', np.eye(ncs), fockz_vv) * np.sqrt((si + 1) / si)
+    a_cv0cv += lib.einsum('ab,ji->iajb', np.eye(nvs), fockz_cc) * np.sqrt((si + 1) / si)
+    a_cv0co += lib.einsum('ij,av->iajv', np.eye(ncs), fockb_vo) * np.sqrt(0.5)
+    a_cv0ov += lib.einsum('ab,vi->iavb', np.eye(nvs), focka_oc) * np.sqrt(0.5)
+
+    def add_sf_hf(scale):
+        # K^SF_{pq,rs} = -scale * (p r | s q) for exact exchange.
+        eri = ao2mo.general(mol, (orbvs, orbvs, orbcs, orbcs), compact=False).reshape(nvs, nvs, ncs, ncs)
+        a_cvcv[:] -= np.einsum('abji->iajb', eri) * scale
+        a_cv0cv0[:] -= np.einsum('abji->iajb', eri) * scale
+
+        eri = ao2mo.general(mol, (orbvs, orbcs, orbcs, orbvs), compact=False).reshape(nvs, ncs, ncs, nvs)
+        a_cv0cv0[:] += np.einsum('aijb->iajb', eri) * (2 * scale)
+
+        eri = ao2mo.general(mol, (orbvs, orbos, orbcs, orbcs), compact=False).reshape(nvs, nos, ncs, ncs)
+        a_cvco[:] -= np.einsum('avji->iajv', eri) * scale * np.sqrt((si + 1) / (2 * si))
+        a_cv0co[:] -= np.einsum('avji->iajv', eri) * scale * np.sqrt(0.5)
+
+        eri = ao2mo.general(mol, (orbvs, orbcs, orbcs, orbos), compact=False).reshape(nvs, ncs, ncs, nos)
+        a_cv0co[:] += np.einsum('aijv->iajv', eri) * (np.sqrt(2) * scale)
+
+        eri = ao2mo.general(mol, (orbvs, orbvs, orbos, orbcs), compact=False).reshape(nvs, nvs, nos, ncs)
+        a_cvov[:] -= np.einsum('abvi->iavb', eri) * scale * np.sqrt((si + 1) / (2 * si))
+        a_cv0ov[:] += np.einsum('abvi->iavb', eri) * scale * np.sqrt(0.5)
+
+        eri = ao2mo.general(mol, (orbvs, orbcs, orbos, orbvs), compact=False).reshape(nvs, ncs, nos, nvs)
+        a_cv0ov[:] -= np.einsum('aivb->iavb', eri) * (np.sqrt(2) * scale)
+
+        eri = ao2mo.general(mol, (orbos, orbos, orbcs, orbcs), compact=False).reshape(nos, nos, ncs, ncs)
+        a_coco[:] -= np.einsum('uvji->iujv', eri) * scale
+
+        eri = ao2mo.general(mol, (orbos, orbcs, orbcs, orbos), compact=False).reshape(nos, ncs, ncs, nos)
+        a_coco[:] += np.einsum('uijv->iujv', eri) * scale
+
+        eri = ao2mo.general(mol, (orbos, orbcs, orbos, orbvs), compact=False).reshape(nos, ncs, nos, nvs)
+        a_coov[:] -= np.einsum('uivb->iuvb', eri) * scale
+
+        eri = ao2mo.general(mol, (orbvs, orbvs, orbos, orbos), compact=False).reshape(nvs, nvs, nos, nos)
+        a_ovov[:] -= np.einsum('abvu->uavb', eri) * scale
+
+        eri = ao2mo.general(mol, (orbvs, orbos, orbos, orbvs), compact=False).reshape(nvs, nos, nos, nvs)
+        a_ovov[:] += np.einsum('auvb->uavb', eri) * scale
+
+    if hybrid:
+        add_sf_hf(hyb)
+    if omega != 0:
+        with mol.with_range_coulomb(omega):
+            add_sf_hf(alpha - hyb)
+
+    dm0 = mf.to_uks().make_rdm1()
+    make_rho = ni._gen_rho_evaluator(mol, dm0, hermi=1, with_lapl=False)[0]
+    xctype = ni._xc_type(mf.xc)
+    mem_now = lib.current_memory()[0]
+    max_memory = max(2000, mf.max_memory * 0.8 - mem_now)
+
+    def add_sf_xc_terms(rho_cv, rho_co, rho_ov, rho_cc, rho_oo, rho_vv, wfxc_sf):
+        def contract(left, right):
+            left_shape = left.shape[-2:]
+            right_shape = right.shape[-2:]
+            if left.ndim == 3:
+                ngrids = left.shape[0]
+                left2 = left.reshape(ngrids, -1)
+                right2 = right.reshape(ngrids, -1)
+                out = lib.einsum('gl,g,gm->lm', left2, wfxc_sf, right2)
+            else:
+                nvar, ngrids = left.shape[:2]
+                left2 = left.reshape(nvar, ngrids, -1)
+                right2 = right.reshape(nvar, ngrids, -1)
+                out = lib.einsum('xgl,xyg,ygm->lm', left2, wfxc_sf, right2)
+            return out.reshape(left_shape + right_shape)
+
+        k_cv_cv = contract(rho_cv, rho_cv)  # i a, j b
+        k_cv_co = contract(rho_cv, rho_co)  # i a, j v
+        k_cv_ov = contract(rho_cv, rho_ov)  # i a, v b
+        k_co_co = contract(rho_co, rho_co)  # i u, j v
+        k_oo_cc = contract(rho_oo, rho_cc)  # u v, i j
+        k_ov_co = contract(rho_ov, rho_co)  # u b, i v
+        k_ov_ov = contract(rho_ov, rho_ov)  # u a, v b
+        k_vv_oo = contract(rho_vv, rho_oo)  # a b, u v
+        k_vv_cc = contract(rho_vv, rho_cc)  # a b, i j
+        k_ov_cc = contract(rho_ov, rho_cc)  # v a, i j
+        k_vv_co = contract(rho_vv, rho_co)  # a b, i v
+
+        a_cvcv[:] += k_cv_cv
+        a_cvco[:] += k_cv_co * np.sqrt((si + 1) / (2 * si))
+        a_cvov[:] += k_cv_ov * np.sqrt((si + 1) / (2 * si))
+        a_coco[:] += k_co_co
+        a_coco[:] -= k_oo_cc.transpose(2, 0, 3, 1)
+        a_coov[:] += k_ov_co.transpose(2, 0, 3, 1)
+        a_ovov[:] += k_ov_ov
+        a_ovov[:] -= k_vv_oo.transpose(2, 0, 3, 1)
+        a_cv0cv0[:] += k_cv_cv
+        a_cv0cv0[:] -= 2 * k_vv_cc.transpose(2, 0, 3, 1)
+        a_cv0co[:] += k_cv_co * np.sqrt(0.5)
+        a_cv0co[:] -= k_ov_cc.transpose(2, 1, 3, 0) * np.sqrt(2)
+        a_cv0ov[:] -= k_cv_ov * np.sqrt(0.5)
+        a_cv0ov[:] += k_vv_co.transpose(2, 0, 3, 1) * np.sqrt(2)
+
+    if xctype == 'LDA':
+        ao_deriv = 0
+        for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
+            rho0a = make_rho(0, ao, mask, xctype)
+            rho0b = make_rho(1, ao, mask, xctype)
+            if Dz0:
+                rho0a = rho0b = 0.5 * (rho0a + rho0b)
+            rho_c = lib.einsum('rp,pi->ri', ao, orbcs)
+            rho_o = lib.einsum('rp,pi->ri', ao, orbos)
+            rho_v = lib.einsum('rp,pi->ri', ao, orbvs)
+            rho_cv = np.einsum('ri,ra->ria', rho_c, rho_v)
+            rho_co = np.einsum('ri,ru->riu', rho_c, rho_o)
+            rho_ov = np.einsum('ru,ra->rua', rho_o, rho_v)
+            rho_cc = np.einsum('ri,rj->rij', rho_c, rho_c)
+            rho_oo = np.einsum('ru,rv->ruv', rho_o, rho_o)
+            rho_vv = np.einsum('ra,rb->rab', rho_v, rho_v)
+
+            if collinear_samples > 0:
+                nimc = dft.numint2c.NumInt2C()
+                nimc.collinear = 'mcol'
+                nimc.collinear_samples = collinear_samples
+                eval_xc_eff_sf = mcfun_eval_xc_adapter_sf(nimc, mf.xc)
+                rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                fxc_sf = 2 * eval_xc_eff_sf(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
+                wfxc_sf = fxc_sf[0, 0] * weight
+                add_sf_xc_terms(rho_cv, rho_co, rho_ov, rho_cc, rho_oo, rho_vv, wfxc_sf)
+
+    elif xctype == 'GGA':
+        ao_deriv = 1
+
+        def make_pair_gga(r1, r2):
+            r12 = np.einsum('xri,rj->xrij', r1, r2[0])
+            r12[1:4] += np.einsum('ri,xrj->xrij', r1[0], r2[1:4])
+            return r12
+
+        for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
+            rho0a = make_rho(0, ao, mask, xctype)
+            rho0b = make_rho(1, ao, mask, xctype)
+            if Dz0:
+                rho0a = rho0b = 0.5 * (rho0a + rho0b)
+            rho_c = lib.einsum('xrp,pi->xri', ao, orbcs)
+            rho_o = lib.einsum('xrp,pi->xri', ao, orbos)
+            rho_v = lib.einsum('xrp,pi->xri', ao, orbvs)
+            rho_cv = make_pair_gga(rho_c, rho_v)
+            rho_co = make_pair_gga(rho_c, rho_o)
+            rho_ov = make_pair_gga(rho_o, rho_v)
+            rho_cc = make_pair_gga(rho_c, rho_c)
+            rho_oo = make_pair_gga(rho_o, rho_o)
+            rho_vv = make_pair_gga(rho_v, rho_v)
+
+            if collinear_samples > 0:
+                nimc = dft.numint2c.NumInt2C()
+                nimc.collinear = 'mcol'
+                nimc.collinear_samples = collinear_samples
+                eval_xc_eff_sf = mcfun_eval_xc_adapter_sf(nimc, mf.xc)
+                rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                fxc_sf = 2 * eval_xc_eff_sf(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
+                wfxc_sf = fxc_sf * weight
+                add_sf_xc_terms(rho_cv, rho_co, rho_ov, rho_cc, rho_oo, rho_vv, wfxc_sf)
+
+    elif xctype == 'MGGA':
+        ao_deriv = 1
+
+        def make_pair_mgga(r1, r2):
+            r12 = np.einsum('xri,rj->xrij', r1, r2[0])
+            r12[1:4] += np.einsum('ri,xrj->xrij', r1[0], r2[1:4])
+            tau12 = np.einsum('xri,xrj->rij', r1[1:4], r2[1:4]) * 0.5
+            return np.vstack([r12, tau12[np.newaxis]])
+
+        for ao, mask, weight, coords in ni.block_loop(mol, mf.grids, nao, ao_deriv, max_memory):
+            rho0a = make_rho(0, ao, mask, xctype)
+            rho0b = make_rho(1, ao, mask, xctype)
+            if Dz0:
+                rho0a = rho0b = 0.5 * (rho0a + rho0b)
+            rho_c = lib.einsum('xrp,pi->xri', ao, orbcs)
+            rho_o = lib.einsum('xrp,pi->xri', ao, orbos)
+            rho_v = lib.einsum('xrp,pi->xri', ao, orbvs)
+            rho_cv = make_pair_mgga(rho_c, rho_v)
+            rho_co = make_pair_mgga(rho_c, rho_o)
+            rho_ov = make_pair_mgga(rho_o, rho_v)
+            rho_cc = make_pair_mgga(rho_c, rho_c)
+            rho_oo = make_pair_mgga(rho_o, rho_o)
+            rho_vv = make_pair_mgga(rho_v, rho_v)
+
+            if collinear_samples > 0:
+                nimc = dft.numint2c.NumInt2C()
+                nimc.collinear = 'mcol'
+                nimc.collinear_samples = collinear_samples
+                eval_xc_eff_sf = mcfun_eval_xc_adapter_sf(nimc, mf.xc)
+                rho_z = np.array([rho0a + rho0b, rho0a - rho0b])
+                fxc_sf = 2 * eval_xc_eff_sf(mf.xc, rho_z, deriv=2, xctype=xctype)[2]
+                wfxc_sf = fxc_sf * weight
+                add_sf_xc_terms(rho_cv, rho_co, rho_ov, rho_cc, rho_oo, rho_vv, wfxc_sf)
+
+    elif xctype == 'HF':
+        pass
+    else:
+        raise NotImplementedError(f'{xctype} not supported for SASF-TDA.')
+
+    fockz_cv = orbcs.T @ fockz @ orbvs
+    fockb_co = orbcs.T @ fockb @ orbos
+    focka_ov = orbos.T @ focka @ orbvs
+    fock0_cv = orbcs.T @ fock0 @ orbvs
+
+    a_cvoo = fockz_cv * 2 * np.sqrt((si + 1) / (2 * si))
+    a_cooo = -fockb_co
+    a_ooov = focka_ov
+    a_cv0oo = -fock0_cv * np.sqrt(2)
+    if not with_oo:
+        a_cvoo = np.zeros_like(a_cvoo)
+        a_cooo = np.zeros_like(a_cooo)
+        a_ooov = np.zeros_like(a_ooov)
+        a_cv0oo = np.zeros_like(a_cv0oo)
+
+    co = ncs * nos
+    cv = ncs * nvs
+    ov = nos * nvs
+    a = np.zeros((2 * cv + co + ov + 1, 2 * cv + co + ov + 1))
+
+    a[:co, :co] = a_coco.reshape(co, co)
+    a[:co, co:co+cv] = a_cvco.transpose(2, 3, 0, 1).reshape(co, cv)
+    a[:co, co+cv:co+cv+1] = a_cooo.reshape(co, 1)
+    a[:co, co+cv+1:co+cv+ov+1] = a_coov.reshape(co, ov)
+    a[:co, co+cv+1+ov:] = a_cv0co.transpose(2, 3, 0, 1).reshape(co, cv)
+
+    a[co:co+cv, :co] = a_cvco.reshape(cv, co)
+    a[co:co+cv, co:co+cv] = a_cvcv.reshape(cv, cv)
+    a[co:co+cv, co+cv:co+cv+1] = a_cvoo.reshape(cv, 1)
+    a[co:co+cv, co+cv+1:co+cv+ov+1] = a_cvov.reshape(cv, ov)
+    a[co:co+cv, co+cv+1+ov:] = a_cv0cv.transpose(2, 3, 0, 1).reshape(cv, cv)
+
+    a[co+cv:co+cv+1, :co] = a_cooo.reshape(1, co)
+    a[co+cv:co+cv+1, co:co+cv] = a_cvoo.reshape(1, cv)
+    a[co+cv:co+cv+1, co+cv:co+cv+1] = 0.0
+    a[co+cv:co+cv+1, co+cv+1:co+cv+ov+1] = a_ooov.reshape(1, ov)
+    a[co+cv:co+cv+1, co+cv+1+ov:] = a_cv0oo.reshape(1, cv)
+
+    a[co+cv+1:co+cv+ov+1, :co] = a_coov.transpose(2, 3, 0, 1).reshape(ov, co)
+    a[co+cv+1:co+cv+ov+1, co:co+cv] = a_cvov.transpose(2, 3, 0, 1).reshape(ov, cv)
+    a[co+cv+1:co+cv+ov+1, co+cv:co+cv+1] = a_ooov.reshape(ov, 1)
+    a[co+cv+1:co+cv+ov+1, co+cv+1:co+cv+ov+1] = a_ovov.reshape(ov, ov)
+    a[co+cv+1:co+cv+ov+1, co+cv+1+ov:] = a_cv0ov.transpose(2, 3, 0, 1).reshape(ov, cv)
+
+    a[co+cv+1+ov:, :co] = a_cv0co.reshape(cv, co)
+    a[co+cv+1+ov:, co:co+cv] = a_cv0cv.reshape(cv, cv)
+    a[co+cv+1+ov:, co+cv:co+cv+1] = a_cv0oo.reshape(cv, 1)
+    a[co+cv+1+ov:, co+cv+1:co+cv+ov+1] = a_cv0ov.reshape(cv, ov)
+    a[co+cv+1+ov:, co+cv+1+ov:] = a_cv0cv0.reshape(cv, cv)
+
+    assert abs(a - a.T).max() < 1e-10
+    return a
+
+
 def _sasf_block_slices(nc, no, nv):
     co = nc * no
     cv = nc * nv

@@ -24,7 +24,7 @@ from pyscf.dft import KohnShamDFT, numint, numint2c
 # import fcuntion
 from pyscf.sftda.numint2c_sftd import cache_xc_kernel_sf
 
-def gen_uhf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0,
+def gen_uhf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, Dz0=False,
                         collinear_samples=200, max_memory=None):
     '''
     Generate a function to compute the product of Spin-flip UKS response function
@@ -48,7 +48,7 @@ def gen_uhf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0,
         hybrid = ni.libxc.is_hybrid_xc(mf.xc)
 
         if collinear_samples >= 0:
-            fxc = 2.0 * cache_xc_kernel_sf(ni, mol, mf.grids, mf.xc, mo_coeff, mo_occ, deriv=2, spin=1)[2]
+            fxc = 2.0 * cache_xc_kernel_sf(ni, mol, mf.grids, mf.xc, mo_coeff, mo_occ, Dz0=Dz0, deriv=2, spin=1)[2]
 
         dm0 = None
 
