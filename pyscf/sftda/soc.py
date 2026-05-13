@@ -4,7 +4,6 @@ from sympy.physics.quantum.cg import CG
 from pyscf import gto, lib, sftda
 from pyscf.scf.jk import get_jk
 from pyscf.data.nist import HARTREE2WAVENUMBER, LIGHT_SPEED, HARTREE2EV
-from pyscf.sftda.tools_td import spin_square
 
 def cg(j1, m1, j2, m2, j, m):
     """
@@ -166,7 +165,18 @@ def calc_ao_soc_1e_x2camf(mol):
         from socutils.somf import somf_pt
     except ImportError:
         raise ImportError("Please install socutils package to use X2CAMF SOC integrals.")
-    ao_soc = 2j * somf_pt.get_psoc_x2camf(mol, gaunt=True, gauge=True)
+    ao_soc = 2j * somf_pt.get_psoc_x2camf(mol)
+    ao_soc_1 = -0.5 * (ao_soc[0] + 1j * ao_soc[1])
+    ao_soc_0 = np.sqrt(0.5) * ao_soc[2]
+    ao_soc_m1 = 0.5 * (ao_soc[0] - 1j * ao_soc[1])
+    return np.array([ao_soc_m1, ao_soc_0, ao_soc_1])
+
+def calc_ao_soc_1e_x2camf_xresp(mol):
+    try:
+        from socutils.somf import somf_pt
+    except ImportError:
+        raise ImportError("Please install socutils package to use X2CAMF SOC integrals.")
+    ao_soc = 2j * somf_pt.get_psoc_x2camf(mol, xresp=True)
     ao_soc_1 = -0.5 * (ao_soc[0] + 1j * ao_soc[1])
     ao_soc_0 = np.sqrt(0.5) * ao_soc[2]
     ao_soc_m1 = 0.5 * (ao_soc[0] - 1j * ao_soc[1])
@@ -427,6 +437,8 @@ def analyze_soc(td, soctype='SOMF'):
         soc_ao = calc_ao_soc_1e(td._scf.mol, Z='one')
     elif soctype == 'X2CAMF':
         soc_ao =  calc_ao_soc_1e_x2camf(td._scf.mol)
+    elif soctype == 'X2CAMF_XRESP':
+        soc_ao =  calc_ao_soc_1e_x2camf_xresp(td._scf.mol)
     else:
         raise ValueError(f"soctype={soctype} is not supported.")
 
@@ -460,6 +472,8 @@ def build_and_diagonalize_soc(td, soctype='SOMF', verbose=True):
         soc_ao = calc_ao_soc_1e(td._scf.mol, Z='one')
     elif soctype == 'X2CAMF':
         soc_ao =  calc_ao_soc_1e_x2camf(td._scf.mol)
+    elif soctype == 'X2CAMF_XRESP':
+        soc_ao =  calc_ao_soc_1e_x2camf_xresp(td._scf.mol)
     else:
         raise ValueError(f"soctype={soctype} is not supported.")
 
@@ -472,7 +486,6 @@ def build_and_diagonalize_soc(td, soctype='SOMF', verbose=True):
     print("Pre-calculating state spins and dimensions...")
     for i in range(nstates):
         # 计算 S^2 和 S
-        # 注意：这里假设 spin_square 是你已有的函数
         s2_val = td.spin_square()[i]
         s_val = round(-1 + np.sqrt(1 + 4 * s2_val)) / 2
         
