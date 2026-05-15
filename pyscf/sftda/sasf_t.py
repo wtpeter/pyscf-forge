@@ -12,6 +12,7 @@ from pyscf.sftda.uhf_sf import TDA_SF
 from pyscf.dft.gen_grid import NBINS
 from pyscf.dft.numint import _scale_ao_sparse, _dot_ao_ao_sparse, _dot_ao_dm_sparse, _contract_rho_sparse
 from pyscf.tdscf._lr_eig import eigh as lr_eigh
+from pyscf.sftda.scf_genrep_sftd import gen_uhf_response_sf
 
 def get_a_sasf_m0(mf, mo_coeff=None, mo_occ=None, collinear_samples=20, with_oo=True, Dz0=False):
     # assert isinstance(mf, dft.roks.ROKS)
@@ -1141,31 +1142,47 @@ def _sasf_main_component(pos, csidx, osidx, vsidx):
     return 'CV(0)', csidx[c], vsidx[v], c, v
 
 
+def _sasf_ground_irrep(mf):
+    mol = mf.mol
+    if mol.groupname == 'C1':
+        return 0, 'A'
+
+    ground_sym = mf.get_wfnsym()
+    if isinstance(ground_sym, str):
+        if ground_sym in mol.irrep_name:
+            idx = mol.irrep_name.index(ground_sym)
+            return int(mol.irrep_id[idx]), mol.irrep_name[idx]
+        return None, ground_sym
+
+    ground_sym = int(np.asarray(ground_sym).ravel()[0])
+    if ground_sym in mol.irrep_id:
+        return ground_sym, mol.irrep_name[mol.irrep_id.index(ground_sym)]
+    if 0 <= ground_sym < len(mol.irrep_name):
+        return int(mol.irrep_id[ground_sym]), mol.irrep_name[ground_sym]
+    return None, '???'
+
+
 def _sasf_irrep_name(mf, mo1, mo2):
-    if mo1 is None or mo2 is None or mf.mol.groupname == 'C1':
+    ground_sym, ground_name = _sasf_ground_irrep(mf)
+    if mf.mol.groupname == 'C1':
         return 'A'
+    if mo1 is None or mo2 is None:
+        return ground_name
+    if ground_sym is None:
+        return '???'
 
     mol = mf.mol
     orb_sym = mf.get_orbsym(mf.mo_coeff)
-    ground_sym = mf.get_wfnsym()
-    if isinstance(ground_sym, str):
-        ground_sym = mol.irrep_name.index(ground_sym) if ground_sym in mol.irrep_name else 0
-    else:
-        ground_sym = int(np.asarray(ground_sym).ravel()[0])
 
-    # PySCF's direct_prod can return non-standard IDs for Dooh/Coov components
-    # (for example E1u x A1g may not be usable as an index of mol.irrep_name).
-    # XOR is the Abelian subgroup product used by PySCF irrep IDs and preserves
-    # the concrete x/y component labels printed in the MO table.
+    # PySCF irrep IDs use XOR for direct products in the Abelian subgroup.
+    # This also preserves concrete x/y component labels for Dooh/Coov MOs.
     ir = int(orb_sym[mo1]) ^ int(orb_sym[mo2]) ^ ground_sym
     if ir in mol.irrep_id:
         return mol.irrep_name[mol.irrep_id.index(ir)]
-    if ir < len(mol.irrep_name):
-        return mol.irrep_name[ir]
-    return 'A'
+    return '???'
 
 
-def analyze_sasf(e, values, mf, mo_occ=None, threshold=0.1, nstates=None, with_oo=True):
+def analyze_sasf(e, values, mf, mo_occ=None, threshold=0.1, nstates=None):
     """Analyze SASF-TDA eigenvectors in the CO(1), CV(1), OO(1), OV(1), CV(0) order."""
     from pyscf.data import nist
 
@@ -1207,10 +1224,7 @@ def analyze_sasf(e, values, mf, mo_occ=None, threshold=0.1, nstates=None, with_o
         sym = _sasf_irrep_name(mf, mo1, mo2)
         syms.append(sym)
 
-        note = ''
-        if block == 'OO(1)' and not with_oo:
-            note = ' (zero OO mode from with_oo=False)'
-        print(f'Excited state {istate + 1} {e[istate] * nist.HARTREE2EV:12.5f} eV, symmetry={sym}{note}')
+        print(f'Excited state {istate + 1} {e[istate] * nist.HARTREE2EV:12.5f} eV, symmetry={sym}')
 
         for c, o in zip(*np.where(abs(x_co1) > threshold)):
             print(f'CO(1) {csidx[c] + 1} -> {osidx[o] + 1} {x_co1[c, o]:10.5f} '
@@ -1219,8 +1233,7 @@ def analyze_sasf(e, values, mf, mo_occ=None, threshold=0.1, nstates=None, with_o
             print(f'CV(1) {csidx[c] + 1} -> {vsidx[v] + 1} {x_cv1[c, v]:10.5f} '
                   f'{100 * x_cv1[c, v] ** 2:5.2f}%')
         if abs(x_oo1[0]) > threshold:
-            oo_note = ' [zeroed]' if not with_oo else ''
-            print(f'OO(1){oo_note} {x_oo1[0]:10.5f} {100 * x_oo1[0] ** 2:5.2f}%')
+            print(f'OO(1) {x_oo1[0]:10.5f} {100 * x_oo1[0] ** 2:5.2f}%')
         for o, v in zip(*np.where(abs(x_ov1) > threshold)):
             print(f'OV(1) {osidx[o] + 1} -> {vsidx[v] + 1} {x_ov1[o, v]:10.5f} '
                   f'{100 * x_ov1[o, v] ** 2:5.2f}%')
