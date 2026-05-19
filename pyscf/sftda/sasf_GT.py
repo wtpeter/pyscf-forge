@@ -447,7 +447,7 @@ def get_h_sasf_gt(mf, mo_energy=None, mo_coeff=None, mo_occ=None,
     fock0 = 0.5 * (focka + fockb)
     fockz = 0.5 * (focka - fockb)
 
-    fa_cc = orbcs.conj().T @ focka @ orbcs
+    orbcs.conj().T @ focka @ orbcs
     fa_oc = orbos.conj().T @ focka @ orbcs
     fa_oo = orbos.conj().T @ focka @ orbos
     fa_ov = orbos.conj().T @ focka @ orbvs
