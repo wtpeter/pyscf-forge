@@ -7,10 +7,6 @@ from pyscf.lib import logger
 from pyscf.tdscf.uhf import TDBase
 from pyscf import __config__
 from pyscf.sftda.numint2c_sftd import mcfun_eval_xc_adapter_sf
-from pyscf.sftda.numint2c_sftd import cache_xc_kernel_sf
-from pyscf.sftda.uhf_sf import TDA_SF
-from pyscf.dft.gen_grid import NBINS
-from pyscf.dft.numint import _scale_ao_sparse, _dot_ao_ao_sparse, _dot_ao_dm_sparse, _contract_rho_sparse
 from pyscf.tdscf._lr_eig import eigh as lr_eigh
 from pyscf.sftda.scf_genrep_sftd import gen_uhf_response_sf
 from pyscf.sftda.sasf import nr_rks_fxc1_gga, nr_rks_fxc1_mgga
@@ -1262,7 +1258,7 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
     assert isinstance(mf, dft.roks.ROKS) or isinstance(mf, dft.rks_symm.SymAdaptedROKS)
 
     s = (mol.nelec[0] - mol.nelec[1]) * 0.5
-    assert s >= 0.5, 'SASFTDA only supports case that Sf=Si>=1/2.'
+    assert s >= 0.5, 'SATDA for Sf=Si only supports case that Si>=1/2.'
 
     ni = mf._numint
     ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
