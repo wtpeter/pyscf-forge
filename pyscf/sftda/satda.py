@@ -29,6 +29,10 @@ from pyscf.dft.gen_grid import NBINS
 from pyscf import __config__
 from pyscf.dft.numint import _scale_ao_sparse, _dot_ao_ao_sparse, _dot_ao_dm_sparse, _contract_rho_sparse
 from pyscf.tdscf._lr_eig import eigh as lr_eigh
+from pyscf import symm
+from pyscf.data import nist
+
+MO_BASE = getattr(__config__, 'MO_BASE', 1)
 
 def nr_rks_fxc1_gga(ni, mol, grids, xc_code, dms, fxc, max_memory=2000):
     nset = dms.shape[0]
@@ -694,3 +698,174 @@ class SATDA(TDBase):
 
     gen_vind_sc = gen_vind_sc
     gen_vind_sf = gen_vind_sf
+
+
+def _analyze_wfnsym(tdobj, x_sym, x, threshold=0.1):
+    possible_sym = np.asarray(x_sym)[np.abs(np.asarray(x)) > threshold]
+    wfnsym = symm.MULTI_IRREPS
+    ids = possible_sym[possible_sym != symm.MULTI_IRREPS]
+    if len(ids) > 0 and np.all(ids == ids[0]):
+        wfnsym = int(ids[0])
+    if wfnsym == symm.MULTI_IRREPS:
+        return wfnsym, '???'
+    return wfnsym, symm.irrep_id2name(tdobj.mol.groupname, wfnsym)
+
+
+def _sasf_block_slices(nc, no, nv):
+    co = nc * no
+    cv = nc * nv
+    ov = no * nv
+    p_co = 0
+    p_cv = p_co + co
+    p_oo = p_cv + cv
+    p_ov = p_oo + 1
+    p_cv0 = p_ov + ov
+    p_end = p_cv0 + cv
+    return {
+        'CO(1)': slice(p_co, p_cv),
+        'CV(1)': slice(p_cv, p_oo),
+        'OO(1)': slice(p_oo, p_ov),
+        'OV(1)': slice(p_ov, p_cv0),
+        'CV(0)': slice(p_cv0, p_end),
+    }
+
+
+def analyze(tdobj, verbose=None, threshold=0.1):
+    log = logger.new_logger(tdobj, verbose)
+    mol = tdobj.mol
+    mf = tdobj._scf
+
+    if tdobj.deltaS == -1:
+        mask = tdobj.get_frozen_mask()
+        mo_occ = np.asarray(mf.mo_occ[mask])
+        mo_map = np.where(mask)[0]
+        occidx = mo_map[mo_occ > 0]
+        viridx = mo_map[mo_occ == 0]
+        nocc = len(occidx)
+
+        if mol.symmetry and mol.groupname != 'C1':
+            x_symab = symm.direct_prod(
+                mf.get_orbsym(mf.mo_coeff)[occidx],
+                mf.get_orbsym(mf.mo_coeff)[viridx],
+                mol.groupname,
+            )
+        else:
+            x_symab = None
+
+        for i in range(tdobj.nstates):
+            x, y = tdobj.xy[i]
+            e_ev = np.asarray(tdobj.e[i]) * nist.HARTREE2EV
+            if x_symab is None:
+                log.note('Excited State %3d: %12.5f eV', i + 1, e_ev)
+            else:
+                wfnsymid, wfnsymlabel = _analyze_wfnsym(tdobj, x_symab, x, threshold=threshold)
+                refsym = mf.get_wfnsym()
+                statesymid = wfnsymid ^ refsym
+                if refsym == symm.MULTI_IRREPS or wfnsymid == symm.MULTI_IRREPS:
+                    statesymlabel = '???'
+                else:
+                    statesymlabel = symm.irrep_id2name(mol.groupname, statesymid)
+                log.note(
+                    'Excited State %3d: %4s (State: %4s) %12.5f eV',
+                    i + 1,
+                    wfnsymlabel,
+                    statesymlabel,
+                    e_ev,
+                )
+
+            if log.verbose >= logger.INFO:
+                for o, v in zip(*np.where(np.abs(x) > threshold)):
+                    log.info('    %4d -> %4d %12.5f', occidx[o] + MO_BASE, viridx[v] + MO_BASE, x[o, v])
+        return tdobj
+
+    if tdobj.deltaS != 0:
+        raise ValueError('deltaS should be either 0 or -1')
+
+    mask = tdobj.get_frozen_mask()
+    mo_occ = np.asarray(mf.mo_occ[mask])
+    mo_map = np.where(mask)[0]
+    cs_loc = np.where(mo_occ == 2)[0]
+    os_loc = np.where(mo_occ == 1)[0]
+    vs_loc = np.where(mo_occ == 0)[0]
+    csidx = mo_map[cs_loc]
+    osidx = mo_map[os_loc]
+    vsidx = mo_map[vs_loc]
+
+    nc = len(csidx)
+    no = len(osidx)
+    nv = len(vsidx)
+    slices = _sasf_block_slices(nc, no, nv)
+
+    if mol.symmetry and mol.groupname != 'C1':
+        orbsym = mf.get_orbsym(mf.mo_coeff)
+        x_sym_co1 = symm.direct_prod(orbsym[csidx], orbsym[osidx], mol.groupname)
+        x_sym_cv1 = symm.direct_prod(orbsym[csidx], orbsym[vsidx], mol.groupname)
+        x_sym_ov1 = symm.direct_prod(orbsym[osidx], orbsym[vsidx], mol.groupname)
+        x_sym_cv0 = x_sym_cv1
+    else:
+        x_sym_co1 = x_sym_cv1 = x_sym_ov1 = x_sym_cv0 = None
+
+    for i in range(tdobj.nstates):
+        x, y = tdobj.xy[i]
+        x = np.asarray(x).reshape(-1)
+        e_ev = np.asarray(tdobj.e[i]) * nist.HARTREE2EV
+
+        if x_sym_co1 is None:
+            log.note('Excited State %3d: %12.5f eV', i + 1, e_ev)
+        else:
+            amp2 = x * x
+            ib = int(np.argmax([
+                amp2[slices['CO(1)']].max(initial=0.0),
+                amp2[slices['CV(1)']].max(initial=0.0),
+                amp2[slices['OO(1)']].max(initial=0.0),
+                amp2[slices['OV(1)']].max(initial=0.0),
+                amp2[slices['CV(0)']].max(initial=0.0),
+            ]))
+            if ib == 0:
+                x_sym = x_sym_co1
+                x_block = x[slices['CO(1)']].reshape(nc, no)
+            elif ib == 1:
+                x_sym = x_sym_cv1
+                x_block = x[slices['CV(1)']].reshape(nc, nv)
+            elif ib == 3:
+                x_sym = x_sym_ov1
+                x_block = x[slices['OV(1)']].reshape(no, nv)
+            else:
+                x_sym = x_sym_cv0
+                x_block = x[slices['CV(0)']].reshape(nc, nv)
+
+            wfnsymid, wfnsymlabel = _analyze_wfnsym(tdobj, x_sym, x_block, threshold=threshold)
+            refsym = mf.get_wfnsym()
+            statesymid = wfnsymid ^ refsym
+            if refsym == symm.MULTI_IRREPS or wfnsymid == symm.MULTI_IRREPS:
+                statesymlabel = '???'
+            else:
+                statesymlabel = symm.irrep_id2name(mol.groupname, statesymid)
+            log.note(
+                'Excited State %3d: %4s (State: %4s) %12.5f eV',
+                i + 1,
+                wfnsymlabel,
+                statesymlabel,
+                e_ev,
+            )
+
+        if log.verbose >= logger.INFO:
+            x_co1 = x[slices['CO(1)']].reshape(nc, no)
+            x_cv1 = x[slices['CV(1)']].reshape(nc, nv)
+            x_oo1 = x[slices['OO(1)']]
+            x_ov1 = x[slices['OV(1)']].reshape(no, nv)
+            x_cv0 = x[slices['CV(0)']].reshape(nc, nv)
+            for c, o in zip(*np.where(np.abs(x_co1) > threshold)):
+                log.info('    CO(1) %4d -> %4d %12.5f', csidx[c] + MO_BASE, osidx[o] + MO_BASE, x_co1[c, o])
+            for c, v in zip(*np.where(np.abs(x_cv1) > threshold)):
+                log.info('    CV(1) %4d -> %4d %12.5f', csidx[c] + MO_BASE, vsidx[v] + MO_BASE, x_cv1[c, v])
+            if abs(x_oo1[0]) > threshold:
+                log.info('    OO(1) %12.5f', x_oo1[0])
+            for o, v in zip(*np.where(np.abs(x_ov1) > threshold)):
+                log.info('    OV(1) %4d -> %4d %12.5f', osidx[o] + MO_BASE, vsidx[v] + MO_BASE, x_ov1[o, v])
+            for c, v in zip(*np.where(np.abs(x_cv0) > threshold)):
+                log.info('    CV(0) %4d -> %4d %12.5f', csidx[c] + MO_BASE, vsidx[v] + MO_BASE, x_cv0[c, v])
+    return tdobj
+
+
+SATDA.analyze = analyze
