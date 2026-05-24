@@ -151,7 +151,7 @@ def nr_rks_fxc1_mgga(ni, mol, grids, xc_code, dms, fxc, max_memory=2000):
 
     return vmat
 
-def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None):
+def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None, log=None):
     '''
     response function for Sf=Si
     '''
@@ -161,6 +161,8 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
         mo_occ = mf.mo_occ
 
     mol = mf.mol
+    if log is None:
+        log = logger.new_logger(mf)
     assert isinstance(mf, dft.roks.ROKS) or isinstance(mf, dft.rks_symm.SymAdaptedROKS)
 
     s = (mol.nelec[0] - mol.nelec[1]) * 0.5
@@ -209,6 +211,7 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
         dms1 = np.concatenate((dms_co, dms_ov), axis=0)
 
         # Coulomb part
+        time_jk = (logger.process_clock(), logger.perf_counter())
         dms_j = np.concatenate((dms_co, dms_ov, dms_cv0), axis=0)
         vcoul = mf.get_j(mol, dms_j, hermi)
         vcoul_co = vcoul[:idx1]
@@ -236,16 +239,20 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
             v1ao_cv += - np.sqrt((s + 1) / 2 / s) * vk_co - vk_cv - np.sqrt((s + 1) / 2 / s) * vk_ov
             v1ao_ov += - vj_co - np.sqrt((s + 1) / 2 / s) * vk_cv + vj_ov - vk_ov + np.sqrt(0.5) * vk_cv0
             v1ao_cv0 += - np.sqrt(0.5) * vk_co + np.sqrt(0.5) * vk_ov - vk_cv0
+        log.timer('SATDA response_sc get_j/get_k total', *time_jk)
 
         # K^Ref part
         if xctype != 'HF':
+            time_xc = (logger.process_clock(), logger.perf_counter())
             vref0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms0, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
+            time_xc = log.timer('SATDA response_sc vref0', *time_xc)
             if xctype == 'LDA':
                 vref1 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms1, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
             elif xctype =='GGA':
                 vref1 = nr_rks_fxc1_gga(ni, mol, mf.grids, mf.xc, dms1, fxc_ref, max_memory=max_memory)
             elif xctype == 'MGGA':
                 vref1 = nr_rks_fxc1_mgga(ni, mol, mf.grids, mf.xc, dms1, fxc_ref, max_memory=max_memory)
+            log.timer('SATDA response_sc vref1', *time_xc)
         else:
             vref0 = np.zeros_like(dms0)
             vref1 = np.zeros_like(dms1)
@@ -261,6 +268,7 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
 
         # K^CV0 part
         if xctype != 'HF':
+            time_xc = (logger.process_clock(), logger.perf_counter())
             v_cocv0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_cv0, 0, hermi, None, None, fxc_cocv0, max_memory=max_memory)
             v_cvcv0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_cv0, 0, hermi, None, None, fxc_cvcv0, max_memory=max_memory)
             v_ovcv0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_cv0, 0, hermi, None, None, fxc_ovcv0, max_memory=max_memory)
@@ -272,6 +280,7 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
             v1ao_cv -= np.sqrt((s + 1) / s) * v_cvcv0
             v1ao_ov -= np.sqrt(0.5) * v_ovcv0
             v1ao_cv0 += np.sqrt(0.5) * v_cv0co - np.sqrt((s + 1) / s) * v_cv0cv - np.sqrt(0.5) * v_cv0ov + v_cv0cv0
+            log.timer('SATDA response_sc XC K^CV0 total', *time_xc)
         return v1ao_co, v1ao_cv, v1ao_ov, v1ao_cv0
 
     orbos = mo_coeff[:, np.where(mo_occ == 1)[0]]
@@ -286,7 +295,7 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
             delta -= mf.get_k(mol, dmoo, 1, omega=omega) * (alpha - hyb)
     return vind, 0.5 * delta
 
-def gen_rohf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None):
+def gen_rohf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None, log=None):
     '''
     response function for Sf=Si-1
     '''
@@ -296,6 +305,8 @@ def gen_rohf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
         mo_occ = mf.mo_occ
 
     mol = mf.mol
+    if log is None:
+        log = logger.new_logger(mf)
     assert isinstance(mf, dft.roks.ROKS) or isinstance(mf, dft.rks_symm.SymAdaptedROKS)
 
     s = (mol.nelec[0] - mol.nelec[1]) * 0.5
@@ -336,19 +347,23 @@ def gen_rohf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
         dms1 = np.concatenate((dms_co, dms_ov), axis=0)
 
         if xctype != 'HF':
+            time_xc = (logger.process_clock(), logger.perf_counter())
             vref0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms0, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
+            time_xc = log.timer('SATDA response_sf vref0', *time_xc)
             if xctype == 'LDA':
                 vref1 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms1, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
             elif xctype =='GGA':
                 vref1 = nr_rks_fxc1_gga(ni, mol, mf.grids, mf.xc, dms1, fxc_ref, max_memory=max_memory)
             elif xctype == 'MGGA':
                 vref1 = nr_rks_fxc1_mgga(ni, mol, mf.grids, mf.xc, dms1, fxc_ref, max_memory=max_memory)
+            log.timer('SATDA response_sf vref1', *time_xc)
         else:
             vref0 = np.zeros_like(dms0)
             vref1 = np.zeros_like(dms1)
 
         # HF part
         if hybrid:
+            time_jk = (logger.process_clock(), logger.perf_counter())
             vk = mf.get_k(mol, dms0, hermi) * hyb
             vj = mf.get_j(mol, dms1, hermi) * hyb
             if omega != 0:
@@ -356,6 +371,7 @@ def gen_rohf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
                 vj += mf.get_j(mol, dms1, hermi, omega=omega) * (alpha - hyb)
             vref0 -= vk
             vref1 -= vj
+            log.timer('SATDA response_sf get_j/get_k total', *time_jk)
         vref0_co = vref0[:idx1]
         vref0_cv = vref0[idx1:idx2]
         vref0_oo = vref0[idx2:idx3]
@@ -410,7 +426,9 @@ def gen_vind_sc(td):
     idx3 = idx2 + 1
     idx4 = idx3 + nos * nvs
 
-    vresp, fockz = gen_rohf_response_sc(mf, mo_coeff=mo_coeff, mo_occ=mo_occ, hermi=0, max_memory=td.max_memory)
+    log = logger.new_logger(td)
+    vresp, fockz = gen_rohf_response_sc(mf, mo_coeff=mo_coeff, mo_occ=mo_occ, hermi=0,
+                                        max_memory=td.max_memory, log=log)
 
     fock = mf.get_fock()
     focka = fock.focka
@@ -445,6 +463,7 @@ def gen_vind_sc(td):
     hdiag = np.concatenate((hdiag_co, hdiag_cv, hdiag_oo, hdiag_ov, hdiag_cv0))
 
     def vind(zs):
+        time0 = time1 = (logger.process_clock(), logger.perf_counter())
         zs = np.asarray(zs)  # (nstates, ndim)
         zs_co = zs[:, :idx1].reshape(-1, ncs, nos)
         zs_cv = zs[:, idx1:idx2].reshape(-1, ncs, nvs)
@@ -455,13 +474,16 @@ def gen_vind_sc(td):
         dms_cv = lib.einsum('xov,pv,qo->xpq', zs_cv, orbvs, orbcs.conj())
         dms_ov = lib.einsum('xov,pv,qo->xpq', zs_ov, orbvs, orbos.conj())
         dms_cv0 = lib.einsum('xov,pv,qo->xpq', zs_cv0, orbvs, orbcs.conj())
+        time1 = log.timer('SATDA gen_vind_sc make density matrices', *time1)
         v1ao_co, v1ao_cv, v1ao_ov, v1ao_cv0 = vresp(dms_co, dms_cv, dms_ov, dms_cv0)
+        time1 = log.timer('SATDA gen_vind_sc response vind total', *time1)
         v1mo_co = lib.einsum('xpq,qo,pv->xov', v1ao_co, orbcs, orbos.conj())
         v1mo_cv = lib.einsum('xpq,qo,pv->xov', v1ao_cv, orbcs, orbvs.conj())
         v1mo_ov = lib.einsum('xpq,qo,pv->xov', v1ao_ov, orbos, orbvs.conj())
         v1mo_cv0 = lib.einsum('xpq,qo,pv->xov', v1ao_cv0, orbcs, orbvs.conj())
+        time1 = log.timer('SATDA gen_vind_sc AO->MO transform', *time1)
 
-        # Fock part
+        # Fock part TODO: accelerate
         v1mo_co += lib.einsum('ij,uv,xjv->xiu', np.eye(ncs), fock_coco1, zs_co)
         v1mo_co -= lib.einsum('uv,ji,xjv->xiu', np.eye(nos), fock_coco2, zs_co)
         v1mo_co += lib.einsum('ij,ub,xjb->xiu', np.eye(ncs), fock_cocv, zs_cv) * np.sqrt((s + 1) / 2 / s)
@@ -495,6 +517,7 @@ def gen_vind_sc(td):
         v1mo_oo += lib.einsum('jb,xjb->x', fock_cvoo.T, zs_cv) * np.sqrt(2 * (s + 1) / s)
         v1mo_oo += lib.einsum('vb,xvb->x', fock_ovoo.T, zs_ov)
         v1mo_oo -= lib.einsum('jb,xjb->x', fock_cv0oo.T, zs_cv0) * np.sqrt(2)
+        time1 = log.timer('SATDA gen_vind_sc Fock part', *time1)
 
         v1mo = np.concatenate((v1mo_co.reshape(len(zs), -1),
                                 v1mo_cv.reshape(len(zs), -1),
@@ -502,6 +525,8 @@ def gen_vind_sc(td):
                                 v1mo_ov.reshape(len(zs), -1),
                                 v1mo_cv0.reshape(len(zs), -1)), axis=1)
         assert v1mo.shape == zs.shape
+        time1 = log.timer('SATDA gen_vind_sc pack result', *time1)
+        log.timer('SATDA gen_vind_sc total', *time0)
         return v1mo
     return vind, hdiag
 
@@ -530,7 +555,9 @@ def gen_vind_sf(td):
     idx2 = idx1 + ncs * nvs
     idx3 = idx2 + nos * nos
 
-    vresp, fockz = gen_rohf_response_sf(mf, mo_coeff=mo_coeff, mo_occ=mo_occ, hermi=0, max_memory=td.max_memory)
+    log = logger.new_logger(td)
+    vresp, fockz = gen_rohf_response_sf(mf, mo_coeff=mo_coeff, mo_occ=mo_occ, hermi=0,
+                                        max_memory=td.max_memory, log=log)
 
     fock = mf.get_fock()
     focka = fock.focka
@@ -567,6 +594,7 @@ def gen_vind_sf(td):
     hdiag = np.block([[hdiag_co, hdiag_cv], [hdiag_oo, hdiag_ov]]).ravel()
 
     def vind(zs):
+        time0 = time1 = (logger.process_clock(), logger.perf_counter())
         zs = np.asarray(zs).reshape(-1, nocc, nvir)
         zs_co = zs[:, :ncs, :nos]
         zs_cv = zs[:, :ncs, nos:]
@@ -576,11 +604,14 @@ def gen_vind_sf(td):
         dms_cv = lib.einsum('xov,pv,qo->xpq', zs_cv, orbvs, orbcs.conj())
         dms_oo = lib.einsum('xov,pv,qo->xpq', zs_oo, orbos, orbos.conj())
         dms_ov = lib.einsum('xov,pv,qo->xpq', zs_ov, orbvs, orbos.conj())
+        time1 = log.timer('SATDA gen_vind_sf make density matrices', *time1)
         v1ao_co, v1ao_cv, v1ao_oo, v1ao_ov = vresp(dms_co, dms_cv, dms_oo, dms_ov)
+        time1 = log.timer('SATDA gen_vind_sf response vind total', *time1)
         v1mo_co = lib.einsum('xpq,qo,pv->xov', v1ao_co, orbcs, orbos.conj())
         v1mo_cv = lib.einsum('xpq,qo,pv->xov', v1ao_cv, orbcs, orbvs.conj())
         v1mo_oo = lib.einsum('xpq,qo,pv->xov', v1ao_oo, orbos, orbos.conj())
         v1mo_ov = lib.einsum('xpq,qo,pv->xov', v1ao_ov, orbos, orbvs.conj())
+        time1 = log.timer('SATDA gen_vind_sf AO->MO transform', *time1)
 
         v1mo_co += lib.einsum('ij,uv,xjv->xiu', np.eye(ncs), fock_coco0, zs_co)
         v1mo_co -= lib.einsum('uv,ji,xjv->xiu', np.eye(nos), fock_coco1, zs_co)
@@ -611,6 +642,7 @@ def gen_vind_sf(td):
         v1mo_ov += lib.einsum('uv,ab,xvb->xua', np.eye(nos), fock_ovov0, zs_ov)
         v1mo_ov -= lib.einsum('ab,vu,xvb->xua', np.eye(nvs), fock_ovov1, zs_ov)
         v1mo_ov -= lib.einsum('uv,ab,xvb->xua', np.eye(nos), fock_ovov2, zs_ov) * 2 / (2 * s - 1)
+        time1 = log.timer('SATDA gen_vind_sf Fock part', *time1)
 
         v1mo = np.zeros_like(zs)
         v1mo[:, :ncs, :nos] = v1mo_co
@@ -618,6 +650,8 @@ def gen_vind_sf(td):
         v1mo[:, ncs:, :nos] = v1mo_oo
         v1mo[:, ncs:, nos:] = v1mo_ov
         assert v1mo.shape == zs.shape
+        time1 = log.timer('SATDA gen_vind_sf pack result', *time1)
+        log.timer('SATDA gen_vind_sf total', *time0)
         return v1mo.reshape(len(v1mo), -1)
     return vind, hdiag
 
@@ -695,7 +729,6 @@ class SATDA(TDBase):
             self.e = self.e[mask]
             self.xy = [xy for xy, keep in zip(self.xy, mask) if keep]
             self.nstates = len(self.e)
-            print(self.nstates)
 
         if self.chkfile:
             lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
