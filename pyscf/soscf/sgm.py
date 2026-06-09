@@ -198,6 +198,8 @@ class _SGM:
             Minimum step size in line search. Default 1e-4.
         first_step_scale : float
             Scale factor for the first L-BFGS step. Default 0.1.
+        gradient_scale: float
+            Scale factor for the orbital gradient in the line search. Default 1.0.
     '''
 
     max_cycle = getattr(__config__, 'sgm_max_cycle', 100)
@@ -205,8 +207,9 @@ class _SGM:
     lbfgs_memory = getattr(__config__, 'sgm_lbfgs_memory', 8)
     c1 = getattr(__config__, 'sgm_c1', 1e-4)
     min_step = getattr(__config__, 'sgm_min_step', 1e-4)
-    first_step_scale = getattr(__config__, 'sgm_first_step_scale', 1)
+    first_step_scale = getattr(__config__, 'sgm_first_step_scale', 0.1)
     canonicalization = getattr(__config__, 'soscf_newton_ah_SOSCF_canonicalization', True)
+    gradient_scale = getattr(__config__, 'sgm_gradient_scale', 1.0)
 
     _keys = {
         'max_cycle', 'tol', 'lbfgs_memory', 'c1', 'min_step', 'first_step_scale', 'canonicalization'
@@ -255,7 +258,7 @@ class _SGM:
         # ---- Initialization: full state (EXPENSIVE) ----
         g_orb, h_op, h_diag = self.gen_g_hop(self._scf, mo_coeff, mo_occ)
         Delta = numpy.dot(g_orb, g_orb)
-        grad_Delta = 2.0 * h_op(g_orb)
+        grad_Delta = 2.0 * h_op(g_orb) * self.gradient_scale
 
         mem = LBFGSMemory(m=self.lbfgs_memory)
 
@@ -272,9 +275,7 @@ class _SGM:
 
             # ---- Step 1: Build preconditioner ----
             # SGM-preferred: 1 / (8 * epsilon_ai^2 + 1e-12)
-            # H0_inv = 1.0 / (8.0 * h_diag**2 + 1e-12)
-            # different from the original paper, but seems to work better in practice
-            H0_inv = 1.0 / (2.0 * h_diag**2 + 1e-12)
+            H0_inv = 1.0 / (8.0 * h_diag**2 + 1e-12)
 
             # ---- Step 2: L-BFGS search direction ----
             p = lbfgs_two_loop(grad_Delta,
