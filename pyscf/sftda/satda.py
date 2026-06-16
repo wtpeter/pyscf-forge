@@ -1185,7 +1185,7 @@ def transition_dipole(tdobj, ref=1, state=None):
 
     a = np.sqrt(2 * s / (2 * s - 1))
     b = 1 / np.sqrt(2 * s * (2 * s - 1))
-    c = np.sqrt((2 * s - 1) / (2 * s))
+    # c = np.sqrt((2 * s - 1) / (2 * s))
     f = np.sqrt((2 * s + 1) / (2 * s))
 
     tr_moo = np.einsum("tt->", m_oo)
@@ -1218,11 +1218,11 @@ def transition_dipole(tdobj, ref=1, state=None):
 
     # OO-OV and OV-OO
     add(osidx, vsidx,
-         c * lib.einsum("ut,nub->ntb", m_oo, n_ov)
+         a * lib.einsum("ut,nub->ntb", m_oo, n_ov)
         - b * tr_moo * n_ov)
 
     add(vsidx, osidx,
-         c * lib.einsum("ua,nuv->nav", m_ov, n_oo)
+         a * lib.einsum("ua,nuv->nav", m_ov, n_oo)
         - b * lib.einsum("ua,n->nau", m_ov, tr_noo))
 
     # CO-CV and CV-CO
