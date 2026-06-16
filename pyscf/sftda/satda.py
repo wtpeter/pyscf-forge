@@ -151,6 +151,112 @@ def nr_rks_fxc1_mgga(ni, mol, grids, xc_code, dms, fxc, max_memory=2000):
 
     return vmat
 
+def _available_memory(max_memory):
+    if max_memory is None:
+        max_memory = 2000
+    return max(2000, max_memory * 0.8 - lib.current_memory()[0])
+
+
+def _eval_xc_t0(ni, xc_code, rho0a, rho0b, xctype):
+    rho_t = (rho0a + rho0b) * 0.5
+    fxc_t = ni.eval_xc_eff(xc_code, (rho_t, rho_t), deriv=2,
+                           xctype=xctype)[2]
+    if xctype == 'LDA':
+        fxc_t = fxc_t[:, 0, :, 0]
+        fxc_sf = (fxc_t[0, 0] + fxc_t[1, 1]
+                  - fxc_t[0, 1] - fxc_t[1, 0]) * 0.25
+        return fxc_sf[np.newaxis, np.newaxis]
+    return (fxc_t[0, :, 0, :] + fxc_t[1, :, 1, :]
+            - fxc_t[0, :, 1, :] - fxc_t[1, :, 0, :]) * 0.25
+
+
+def _cache_xc_kernel_t0(mf, max_memory=None):
+    mol = mf.mol
+    ni = mf._numint
+    xctype = ni._xc_type(mf.xc)
+    if xctype not in ('LDA', 'GGA', 'MGGA'):
+        raise NotImplementedError(
+            'Only LDA/GGA/MGGA/HF are implemented for SATDA deltaS=+1.'
+        )
+
+    ao_deriv = 0 if xctype == 'LDA' else 1
+    nao = mol.nao_nr()
+    dm0 = mf.to_uks().make_rdm1()
+    make_rho = ni._gen_rho_evaluator(mol, dm0, hermi=1,
+                                      with_lapl=False)[0]
+    if max_memory is None:
+        max_memory = _available_memory(mf.max_memory)
+
+    fxc = []
+    for ao, mask, weight, coords in ni.block_loop(
+            mol, mf.grids, nao, ao_deriv, max_memory):
+        rho0a = make_rho(0, ao, mask, xctype)
+        rho0b = make_rho(1, ao, mask, xctype)
+        fxc.append(_eval_xc_t0(ni, mf.xc, rho0a, rho0b, xctype))
+    return np.concatenate(fxc, axis=-1)
+
+
+def gen_rohf_response_splus(mf, mo_coeff=None, mo_occ=None, hermi=0,
+                            max_memory=None, log=None):
+    '''
+    response function for Sf=Si+1 with K^SF_0 = K^t0
+    '''
+    if mo_coeff is None:
+        mo_coeff = mf.mo_coeff
+    if mo_occ is None:
+        mo_occ = mf.mo_occ
+
+    mol = mf.mol
+    if log is None:
+        log = logger.new_logger(mf)
+    assert isinstance(mf, dft.roks.ROKS) or isinstance(mf, dft.rks_symm.SymAdaptedROKS)
+
+    ni = mf._numint
+    ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
+    omega, alpha, hyb = ni.rsh_and_hybrid_coeff(mf.xc, mol.spin)
+    hybrid = ni.libxc.is_hybrid_xc(mf.xc)
+    xctype = ni._xc_type(mf.xc)
+    if max_memory is None:
+        max_memory = mf.max_memory
+    max_memory = _available_memory(max_memory)
+
+    if mf.do_nlc():
+        logger.warn(mf, "NLC contribution in gen_response is NOT included")
+
+    if xctype in ('HF', 'NLC'):
+        fxc_t0 = None
+    else:
+        fxc_t0 = 2.0 * _cache_xc_kernel_t0(mf, max_memory=max_memory)
+
+    def contract_kt0(dms, hermi_):
+        dms = np.asarray(dms)
+        if fxc_t0 is None:
+            v1ao = np.zeros_like(dms)
+        else:
+            time_xc = (logger.process_clock(), logger.perf_counter())
+            ni_rks = dft.numint.NumInt()
+            v1ao = ni_rks.nr_rks_fxc(
+                mol, mf.grids, mf.xc, None, dms, 0, hermi_, None, None,
+                fxc_t0, max_memory=max_memory)
+            log.timer('SATDA response_splus K^T0 vref', *time_xc)
+
+        if hybrid:
+            time_jk = (logger.process_clock(), logger.perf_counter())
+            vk = mf.get_k(mol, dms, hermi_) * hyb
+            if omega != 0:
+                vk += mf.get_k(mol, dms, hermi_, omega=omega) * (alpha - hyb)
+            v1ao -= vk
+            log.timer('SATDA response_splus K^T0 get_k total', *time_jk)
+        return v1ao
+
+    def vind(dms_cv):
+        return contract_kt0(dms_cv, hermi)
+
+    orbos = mo_coeff[:, np.where(mo_occ == 1)[0]]
+    dmoo = orbos @ orbos.T
+    delta = contract_kt0(dmoo[np.newaxis], 1)[0]
+    return vind, delta
+
 def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=None, log=None):
     '''
     response function for Sf=Si
@@ -176,16 +282,6 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
     if xctype != 'HF':
         fxc_d0 = ni.cache_xc_kernel(mol, mf.grids, mf.xc, mo_coeff, mo_occ, 1)[2]  # TODO: needed to be checked
         fxc_ref = 0.5 * (fxc_d0[0, :, 0] - fxc_d0[0, :, 1] - fxc_d0[1, :, 0] + fxc_d0[1, :, 1])
-        umf = mf.to_uks()
-        uni = umf._numint
-        _, _, fxc = uni.cache_xc_kernel(mol, mf.grids, mf.xc, umf.mo_coeff, umf.mo_occ, 1)
-        fxc_s = 0.5 * (fxc[0, :, 0] + fxc[0, :, 1] + fxc[1, :, 0] + fxc[1, :, 1])
-        fxc_cv0cv = 0.5 * (fxc[0, :, 0] + fxc[0, :, 1] - fxc[1, :, 0] - fxc[1, :, 1])
-        fxc_cvcv0 = 0.5 * (fxc[0, :, 0] - fxc[0, :, 1] + fxc[1, :, 0] - fxc[1, :, 1])
-        fxc_cv0co = fxc[0, :, 1] + fxc[1, :, 1]
-        fxc_cv0ov = fxc[0, :, 0] + fxc[1, :, 0]
-        fxc_cocv0 = fxc[1, :, 0] + fxc[1, :, 1]
-        fxc_ovcv0 = fxc[0, :, 0] + fxc[0, :, 1]
 
     if max_memory is None:
         mem_now = lib.current_memory()[0]
@@ -207,80 +303,52 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
         v1ao_ov = np.zeros_like(dms_ov)
         v1ao_cv0 = np.zeros_like(dms_cv0)
 
-        dms0 = np.concatenate((dms_co, dms_cv, dms_ov), axis=0)
-        dms1 = np.concatenate((dms_co, dms_ov), axis=0)
+        dms0 = np.concatenate((dms_co, dms_cv, dms_ov, dms_cv0), axis=0)
+        dms1 = np.concatenate((dms_co, dms_ov, dms_cv0), axis=0)
 
-        # Coulomb part
-        time_jk = (logger.process_clock(), logger.perf_counter())
-        dms_j = np.concatenate((dms_co, dms_ov, dms_cv0), axis=0)
-        vcoul = mf.get_j(mol, dms_j, hermi)
-        vcoul_co = vcoul[:idx1]
-        vcoul_ov = vcoul[idx1:idx1+n_ov]
-        vcoul_cv0 = vcoul[idx1+n_ov:]
-        v1ao_co += np.sqrt(2) * vcoul_cv0
-        v1ao_ov -= np.sqrt(2) * vcoul_cv0
-        v1ao_cv0 += np.sqrt(2) * vcoul_co - np.sqrt(2) * vcoul_ov + 2 * vcoul_cv0
-
-        # HF part
-        if hybrid:
-            dms = np.concatenate((dms_co, dms_cv, dms_ov, dms_cv0), axis=0)
-            vk = mf.get_k(mol, dms, hermi) * hyb
-            vj = vcoul[:idx1+n_ov] * hyb
-            if omega != 0:
-                vk += mf.get_k(mol, dms, hermi, omega=omega) * (alpha - hyb)
-                vj += mf.get_j(mol, dms_j[:idx1+n_ov], hermi, omega=omega) * (alpha - hyb)
-            vk_co = vk[:idx1]
-            vk_cv = vk[idx1:idx2]
-            vk_ov = vk[idx2:idx3]
-            vk_cv0 = vk[idx3:]
-            vj_co = vj[:idx1]
-            vj_ov = vj[idx1:]
-            v1ao_co += - vk_co + vj_co - np.sqrt((s + 1) / 2 / s) * vk_cv - vj_ov - np.sqrt(0.5) * vk_cv0
-            v1ao_cv += - np.sqrt((s + 1) / 2 / s) * vk_co - vk_cv - np.sqrt((s + 1) / 2 / s) * vk_ov
-            v1ao_ov += - vj_co - np.sqrt((s + 1) / 2 / s) * vk_cv + vj_ov - vk_ov + np.sqrt(0.5) * vk_cv0
-            v1ao_cv0 += - np.sqrt(0.5) * vk_co + np.sqrt(0.5) * vk_ov - vk_cv0
-        log.timer('SATDA response_sc get_j/get_k total', *time_jk)
-
-        # K^Ref part
+        # K^T0 part
         if xctype != 'HF':
             time_xc = (logger.process_clock(), logger.perf_counter())
             vref0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms0, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
-            time_xc = log.timer('SATDA response_sc vref0', *time_xc)
+            time_xc = log.timer('SATDA response_sc K^T0 vref0', *time_xc)
             if xctype == 'LDA':
                 vref1 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms1, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
             elif xctype =='GGA':
                 vref1 = nr_rks_fxc1_gga(ni, mol, mf.grids, mf.xc, dms1, fxc_ref, max_memory=max_memory)
             elif xctype == 'MGGA':
                 vref1 = nr_rks_fxc1_mgga(ni, mol, mf.grids, mf.xc, dms1, fxc_ref, max_memory=max_memory)
-            log.timer('SATDA response_sc vref1', *time_xc)
+            log.timer('SATDA response_sc K^T0 vref1', *time_xc)
         else:
             vref0 = np.zeros_like(dms0)
             vref1 = np.zeros_like(dms1)
+
+        if hybrid:
+            time_jk = (logger.process_clock(), logger.perf_counter())
+            vk = mf.get_k(mol, dms0, hermi) * hyb
+            vj = mf.get_j(mol, dms1, hermi) * hyb
+            if omega != 0:
+                vk += mf.get_k(mol, dms0, hermi, omega=omega) * (alpha - hyb)
+                vj += mf.get_j(mol, dms1, hermi, omega=omega) * (alpha - hyb)
+            vref0 -= vk
+            vref1 -= vj
+            log.timer('SATDA response_sc K^T0 get_j/get_k total', *time_jk)
+
         vref0_co = vref0[:idx1]
         vref0_cv = vref0[idx1:idx2]
-        vref0_ov = vref0[idx2:]
+        vref0_ov = vref0[idx2:idx3]
+        vref0_cv0 = vref0[idx3:]
         vref1_co = vref1[:idx1]
-        vref1_ov = vref1[idx1:]
+        vref1_ov = vref1[idx1:idx1+n_ov]
+        vref1_cv0 = vref1[idx1+n_ov:]
 
         v1ao_co += vref0_co - vref1_co + np.sqrt((s + 1) / 2 / s) * vref0_cv + vref1_ov
         v1ao_cv += np.sqrt((s + 1) / 2 / s) * vref0_co + vref0_cv + np.sqrt((s + 1) / 2 / s) * vref0_ov
         v1ao_ov += vref1_co + np.sqrt((s + 1) / 2 / s) * vref0_cv - vref1_ov + vref0_ov
-
-        # K^CV0 part
-        if xctype != 'HF':
-            time_xc = (logger.process_clock(), logger.perf_counter())
-            v_cocv0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_cv0, 0, hermi, None, None, fxc_cocv0, max_memory=max_memory)
-            v_cvcv0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_cv0, 0, hermi, None, None, fxc_cvcv0, max_memory=max_memory)
-            v_ovcv0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_cv0, 0, hermi, None, None, fxc_ovcv0, max_memory=max_memory)
-            v_cv0co = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_co, 0, hermi, None, None, fxc_cv0co, max_memory=max_memory)
-            v_cv0cv = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_cv, 0, hermi, None, None, fxc_cv0cv, max_memory=max_memory)
-            v_cv0ov = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_ov, 0, hermi, None, None, fxc_cv0ov, max_memory=max_memory)
-            v_cv0cv0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms_cv0, 0, hermi, None, None, fxc_s, max_memory=max_memory)
-            v1ao_co += np.sqrt(0.5) * v_cocv0
-            v1ao_cv -= np.sqrt((s + 1) / s) * v_cvcv0
-            v1ao_ov -= np.sqrt(0.5) * v_ovcv0
-            v1ao_cv0 += np.sqrt(0.5) * v_cv0co - np.sqrt((s + 1) / s) * v_cv0cv - np.sqrt(0.5) * v_cv0ov + v_cv0cv0
-            log.timer('SATDA response_sc XC K^CV0 total', *time_xc)
+        v1ao_co += np.sqrt(0.5) * vref0_cv0 - np.sqrt(2.0) * vref1_cv0
+        v1ao_ov += -np.sqrt(0.5) * vref0_cv0 + np.sqrt(2.0) * vref1_cv0
+        v1ao_cv0 += np.sqrt(0.5) * vref0_co - np.sqrt(2.0) * vref1_co
+        v1ao_cv0 += -np.sqrt(0.5) * vref0_ov + np.sqrt(2.0) * vref1_ov
+        v1ao_cv0 += vref0_cv0 - 2.0 * vref1_cv0
         return v1ao_co, v1ao_cv, v1ao_ov, v1ao_cv0
 
     orbos = mo_coeff[:, np.where(mo_occ == 1)[0]]
@@ -432,7 +500,7 @@ def gen_vind_sc(td):
 
     fock = mf.get_fock()
     focka = fock.focka
-    fockb = fock.fockb
+    fockb = focka - 2.0 * fockz
     fock0 = focka - fockz
 
     fock_coco1 = orbos.T @ (fock0 - fockz) @ orbos
@@ -440,7 +508,7 @@ def gen_vind_sc(td):
     fock_cocv = orbos.T @ (fock0 - fockz) @ orbvs
     fock_cvcv1 = orbvs.T @ (fock0 - fockz / s) @ orbvs
     fock_cvcv2 = orbcs.T @ (fock0 + fockz / s) @ orbcs
-    fock_cocv0 = orbos.T @ fockb @ orbvs  # should be specified which fock to use for cv0 block
+    fock_cocv0 = orbos.T @ fockb @ orbvs
     fock_cvov = orbos.T @ (fock0 + fockz) @ orbcs
     fock_cvcv01 = 0.5 * orbvs.T @ (focka - fockb) @ orbvs
     fock_cvcv02 = 0.5 * orbcs.T @ (focka - fockb) @ orbcs
@@ -655,10 +723,59 @@ def gen_vind_sf(td):
         return v1mo.reshape(len(v1mo), -1)
     return vind, hdiag
 
+def gen_vind_splus(td):
+    mf = td._scf
+    mo_coeff = mf.mo_coeff
+    assert mo_coeff[0].dtype == np.double
+    mo_occ = mf.mo_occ
+
+    csidx = np.where(mo_occ == 2)[0]
+    vsidx = np.where(mo_occ == 0)[0]
+    orbcs = mo_coeff[:, csidx]
+    orbvs = mo_coeff[:, vsidx]
+    ncs = orbcs.shape[1]
+    nvs = orbvs.shape[1]
+
+    log = logger.new_logger(td)
+    vresp, delta = gen_rohf_response_splus(mf, mo_coeff=mo_coeff,
+                                           mo_occ=mo_occ, hermi=0,
+                                           max_memory=td.max_memory, log=log)
+
+    fock = mf.get_fock()
+    focka = fock.focka
+    fockb = focka - delta
+
+    fock_cvcv = orbvs.T @ focka @ orbvs
+    fock_coco = orbcs.T @ fockb @ orbcs
+
+    hdiag = (fock_cvcv.diagonal()[None, :]
+             - fock_coco.diagonal()[:, None]).ravel()
+
+    def vind(zs):
+        time0 = time1 = (logger.process_clock(), logger.perf_counter())
+        zs = np.asarray(zs).reshape(-1, ncs, nvs)
+        dms_cv = lib.einsum('xia,pa,qi->xpq', zs, orbvs, orbcs.conj())
+        time1 = log.timer('SATDA gen_vind_splus make density matrices', *time1)
+        v1ao_cv = vresp(dms_cv)
+        time1 = log.timer('SATDA gen_vind_splus response vind total', *time1)
+        v1mo_cv = lib.einsum('xpq,qi,pa->xia', v1ao_cv,
+                             orbcs, orbvs.conj())
+        time1 = log.timer('SATDA gen_vind_splus AO->MO transform', *time1)
+
+        v1mo_cv += lib.einsum('ab,xib->xia', fock_cvcv, zs)
+        v1mo_cv -= lib.einsum('ji,xja->xia', fock_coco, zs)
+        time1 = log.timer('SATDA gen_vind_splus Fock part', *time1)
+
+        v1mo = v1mo_cv.reshape(len(zs), -1)
+        time1 = log.timer('SATDA gen_vind_splus pack result', *time1)
+        log.timer('SATDA gen_vind_splus total', *time0)
+        return v1mo
+    return vind, hdiag
+
 class SATDA(TDBase):
     '''
     Spin-Adapted TDA
-    deltaS: -1 for Sf=Si-1, 0 for Sf=Si
+    deltaS: -1 for Sf=Si-1, 0 for Sf=Si, 1 for Sf=Si+1
     '''
 
     deltaS = getattr(__config__, 'SATDA_delta_S', -1)
@@ -700,8 +817,14 @@ class SATDA(TDBase):
             csidx, osidx, vsidx = _satda_orbital_indices(self)
             nocc = len(csidx) + len(osidx)
             nvir = len(osidx) + len(vsidx)
+        elif self.deltaS == 1:
+            vind, hdiag = self.gen_vind_splus()
+            precond = self.get_precond(hdiag)
+            csidx, _, vsidx = _satda_orbital_indices(self)
+            ncs = len(csidx)
+            nvs = len(vsidx)
         else:
-            raise ValueError('deltaS should be either 0 or -1')
+            raise ValueError('deltaS should be -1, 0, or 1')
 
         x0sym = None
         if x0 is None:
@@ -729,6 +852,8 @@ class SATDA(TDBase):
             self.e = self.e[mask]
             self.xy = [xy for xy, keep in zip(self.xy, mask) if keep]
             self.nstates = len(self.e)
+        elif self.deltaS == 1:
+            self.xy = [(xi.reshape(ncs, nvs), 0) for xi in x1]
 
         if self.chkfile:
             lib.chkfile.save(self.chkfile, 'tddft/e', self.e)
@@ -740,6 +865,7 @@ class SATDA(TDBase):
 
     gen_vind_sc = gen_vind_sc
     gen_vind_sf = gen_vind_sf
+    gen_vind_splus = gen_vind_splus
 
 
 def _analyze_wfnsym(tdobj, x_sym, x):
@@ -750,7 +876,14 @@ def _analyze_wfnsym(tdobj, x_sym, x):
         wfnsym = int(ids[0])
     if wfnsym == symm.MULTI_IRREPS:
         return wfnsym, '???'
-    return wfnsym, symm.irrep_id2name(tdobj.mol.groupname, wfnsym)
+    return wfnsym, _safe_irrep_id2name(tdobj.mol.groupname, wfnsym)
+
+
+def _safe_irrep_id2name(groupname, irrep_id):
+    try:
+        return symm.irrep_id2name(groupname, int(irrep_id))
+    except KeyError:
+        return '???'
 
 
 def _satda_block_slices(nc, no, nv, deltaS):
@@ -802,7 +935,7 @@ def _log_state(log, tdobj, istate, e_ev, wfnsymid=None, wfnsymlabel=None):
         if statesymid == symm.MULTI_IRREPS:
             statesymlabel = '???'
         else:
-            statesymlabel = symm.irrep_id2name(mol.groupname, int(statesymid))
+            statesymlabel = _safe_irrep_id2name(mol.groupname, statesymid)
     log.note(
         'Excited State %3d: %4s (State: %4s) %12.5f eV',
         istate + 1, wfnsymlabel, statesymlabel, e_ev,
@@ -925,12 +1058,204 @@ def _analyze_sf(tdobj, verbose=None):
     return tdobj
 
 
+def _analyze_splus(tdobj, verbose=None):
+    log = logger.new_logger(tdobj, verbose)
+    mol = tdobj.mol
+    mf = tdobj._scf
+    csidx, osidx, vsidx = _satda_orbital_indices(tdobj)
+    nc = len(csidx)
+    nv = len(vsidx)
+
+    if mol.symmetry and mol.groupname != 'C1':
+        orbsym = mf.get_orbsym(mf.mo_coeff)
+        x_sym = symm.direct_prod(orbsym[csidx], orbsym[vsidx],
+                                 mol.groupname)
+    else:
+        x_sym = None
+
+    nstates = min(tdobj.nstates, len(tdobj.xy))
+    for i in range(nstates):
+        x, y = tdobj.xy[i]
+        x_cv = np.asarray(x).reshape(nc, nv)
+        e_ev = np.asarray(tdobj.e[i]) * nist.HARTREE2EV
+
+        if x_sym is None:
+            _log_state(log, tdobj, i, e_ev)
+        else:
+            wfnsymid, wfnsymlabel = _analyze_wfnsym(tdobj, x_sym, x_cv)
+            _log_state(log, tdobj, i, e_ev, wfnsymid, wfnsymlabel)
+
+        if log.verbose >= logger.INFO:
+            for c, v in zip(*np.where(np.abs(x_cv) > ANALYZE_THRESHOLD)):
+                log.info('    CV(+1) %4d -> %4d %12.5f',
+                         csidx[c] + MO_BASE, vsidx[v] + MO_BASE, x_cv[c, v])
+    return tdobj
+
+
 def analyze(tdobj, verbose=None):
     if tdobj.deltaS == 0:
         return _analyze_sc(tdobj, verbose)
     if tdobj.deltaS == -1:
         return _analyze_sf(tdobj, verbose)
-    raise ValueError('deltaS should be either 0 or -1')
+    if tdobj.deltaS == 1:
+        return _analyze_splus(tdobj, verbose)
+    raise ValueError('deltaS should be -1, 0, or 1')
 
 
 SATDA.analyze = analyze
+
+
+def transition_dipole(tdobj, ref=1, state=None):
+    """
+    Transition dipole moments between SATDA DeltaS = -1 excited states.
+
+    Parameters
+    ----------
+    tdobj : SATDA object
+        Need tdobj.deltaS == -1 and tdobj.xy.
+    ref : int
+        1-based reference excited-state index.
+    state : int or array-like or None
+        1-based target excited-state index/indices. If None, all states except ref.
+
+    Returns
+    -------
+    pol : ndarray, shape (nstates, 3)
+        <ref| r |state> in length gauge.
+    """
+    mf = tdobj._scf
+    mol = mf.mol
+
+    deltaS = getattr(tdobj, "deltaS", getattr(tdobj, "DeltaS", None))
+    assert deltaS == -1
+
+    s = (mol.nelec[0] - mol.nelec[1]) * 0.5
+    assert s >= 1
+
+    mo_coeff = mf.mo_coeff
+    mo_occ = mf.mo_occ
+    assert mo_occ.ndim == 1
+
+    csidx = np.where(mo_occ == 2)[0]
+    osidx = np.where(mo_occ == 1)[0]
+    vsidx = np.where(mo_occ == 0)[0]
+
+    ncs = len(csidx)
+    nos = len(osidx)
+    nvs = len(vsidx)
+    nocc = ncs + nos
+    nvir = nos + nvs
+    nmo = mo_coeff.shape[1]
+
+    if state is None:
+        states = np.arange(tdobj.nstates) + 1
+    else:
+        states = np.atleast_1d(state).astype(int)
+
+    states = states[states != ref]
+    ref0 = ref - 1
+    states0 = states - 1
+
+    def get_x(i):
+        x = tdobj.xy[i]
+        if isinstance(x, (tuple, list)):
+            x = x[0]
+        return np.asarray(x).reshape(nocc, nvir)
+
+    mx = get_x(ref0)
+    nxs = np.asarray([get_x(i) for i in states0])
+
+    # x_co: j v, x_cv: j b, x_oo: w v, x_ov: v b
+    m_co = mx[:ncs, :nos].conj()
+    m_cv = mx[:ncs, nos:].conj()
+    m_oo = mx[ncs:, :nos].conj()
+    m_ov = mx[ncs:, nos:].conj()
+
+    n_co = nxs[:, :ncs, :nos]
+    n_cv = nxs[:, :ncs, nos:]
+    n_oo = nxs[:, ncs:, :nos]
+    n_ov = nxs[:, ncs:, nos:]
+
+    nstate = len(states0)
+    gamma = np.zeros((nstate, nmo, nmo), dtype=np.result_type(mx, nxs, complex))
+    ist = np.arange(nstate)
+
+    def add(rows, cols, block):
+        gamma[np.ix_(ist, rows, cols)] += block
+
+    a = np.sqrt(2 * s / (2 * s - 1))
+    b = 1 / np.sqrt(2 * s * (2 * s - 1))
+    c = np.sqrt((2 * s - 1) / (2 * s))
+    f = np.sqrt((2 * s + 1) / (2 * s))
+
+    tr_moo = np.einsum("tt->", m_oo)
+    tr_noo = np.einsum("ntt->n", n_oo)
+
+    # OO-OO
+    add(osidx, osidx,  lib.einsum("ut,nuv->ntv", m_oo, n_oo))
+    add(osidx, osidx, -lib.einsum("ut,nwt->nwu", m_oo, n_oo))
+
+    # CO-CO
+    add(osidx, osidx,  lib.einsum("iu,niv->nuv", m_co, n_co))
+    add(csidx, csidx, -lib.einsum("iu,nju->nji", m_co, n_co))
+
+    # CV-CV
+    add(csidx, csidx, -lib.einsum("ia,nja->nji", m_cv, n_cv))
+    add(vsidx, vsidx,  lib.einsum("ia,nib->nab", m_cv, n_cv))
+
+    # OV-OV
+    add(osidx, osidx, -lib.einsum("ua,nva->nvu", m_ov, n_ov))
+    add(vsidx, vsidx,  lib.einsum("ua,nub->nab", m_ov, n_ov))
+
+    # OO-CO and CO-OO
+    add(csidx, osidx,
+        -a * lib.einsum("ut,njt->nju", m_oo, n_co)
+        + b * tr_moo * n_co)
+
+    add(osidx, csidx,
+        -a * lib.einsum("iu,nwu->nwi", m_co, n_oo)
+        + b * lib.einsum("iu,n->nui", m_co, tr_noo))
+
+    # OO-OV and OV-OO
+    add(osidx, vsidx,
+         c * lib.einsum("ut,nub->ntb", m_oo, n_ov)
+        - b * tr_moo * n_ov)
+
+    add(vsidx, osidx,
+         c * lib.einsum("ua,nuv->nav", m_ov, n_oo)
+        - b * lib.einsum("ua,n->nau", m_ov, tr_noo))
+
+    # CO-CV and CV-CO
+    add(osidx, vsidx, f * lib.einsum("iu,nib->nub", m_co, n_cv))
+    add(vsidx, osidx, f * lib.einsum("ia,niv->nav", m_cv, n_co))
+
+    # OV-CV and CV-OV
+    add(csidx, osidx, -f * lib.einsum("ua,nja->nju", m_ov, n_cv))
+    add(osidx, csidx, -f * lib.einsum("ia,nva->nvi", m_cv, n_ov))
+
+    dip_ao = mol.intor_symmetric("int1e_r", comp=3)
+    dip_mo = lib.einsum("up,xuv,vq->xpq", mo_coeff.conj(), dip_ao, mo_coeff)
+
+    pol = lib.einsum("npq,xpq->nx", gamma, dip_mo)
+    return pol.real
+
+def oscillator_strength(tdobj, ref=1, state=None):
+    if state is None:
+        states = np.arange(tdobj.nstates) + 1
+    else:
+        states = np.atleast_1d(state)
+    states = states[states != ref]
+
+    trans_dip = transition_dipole(tdobj, ref, states)
+
+    ref -= 1
+    states -= 1
+    es = tdobj.e[states] - tdobj.e[ref]
+    f = (2./3.) * lib.einsum('n,nx,nx->n', es, trans_dip.conj(), trans_dip).real
+    if isinstance(state, int):
+        return f[0]
+    else:
+        return f
+
+SATDA.transition_dipole = transition_dipole
+SATDA.oscillator_strength = oscillator_strength
