@@ -309,10 +309,12 @@ def gen_rohf_response_sc(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
         # K^T0 part
         if xctype != 'HF':
             time_xc = (logger.process_clock(), logger.perf_counter())
-            vref0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms0, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
+            vref0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms0, 0, hermi,
+                                  None, None, fxc_ref, max_memory=max_memory)
             time_xc = log.timer('SATDA response_sc K^T0 vref0', *time_xc)
             if xctype == 'LDA':
-                vref1 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms1, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
+                vref1 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms1, 0, hermi,
+                                      None, None, fxc_ref, max_memory=max_memory)
             elif xctype =='GGA':
                 vref1 = nr_rks_fxc1_gga(ni, mol, mf.grids, mf.xc, dms1, fxc_ref, max_memory=max_memory)
             elif xctype == 'MGGA':
@@ -401,7 +403,6 @@ def gen_rohf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
         n_co = len(dms_co)
         n_cv = len(dms_cv)
         n_oo = len(dms_oo)
-        n_ov = len(dms_ov)
         idx1 = n_co
         idx2 = n_co + n_cv
         idx3 = n_co + n_cv + n_oo
@@ -416,10 +417,12 @@ def gen_rohf_response_sf(mf, mo_coeff=None, mo_occ=None, hermi=0, max_memory=Non
 
         if xctype != 'HF':
             time_xc = (logger.process_clock(), logger.perf_counter())
-            vref0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms0, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
+            vref0 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms0, 0, hermi,
+                                  None, None, fxc_ref, max_memory=max_memory)
             time_xc = log.timer('SATDA response_sf vref0', *time_xc)
             if xctype == 'LDA':
-                vref1 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms1, 0, hermi, None, None, fxc_ref, max_memory=max_memory)
+                vref1 = ni.nr_rks_fxc(mol, mf.grids, mf.xc, None, dms1, 0, hermi,
+                                      None, None, fxc_ref, max_memory=max_memory)
             elif xctype =='GGA':
                 vref1 = nr_rks_fxc1_gga(ni, mol, mf.grids, mf.xc, dms1, fxc_ref, max_memory=max_memory)
             elif xctype == 'MGGA':
@@ -619,9 +622,6 @@ def gen_vind_sf(td):
     nvs = orbvs.shape[1]
     nocc = ncs + nos
     nvir = nos + nvs
-    idx1 = ncs * nos
-    idx2 = idx1 + ncs * nvs
-    idx3 = idx2 + nos * nos
 
     log = logger.new_logger(td)
     vresp, fockz = gen_rohf_response_sf(mf, mo_coeff=mo_coeff, mo_occ=mo_occ, hermi=0,
@@ -698,7 +698,8 @@ def gen_vind_sf(td):
 
         v1mo_oo -= lib.einsum('vt,ju,xjv->xut', np.eye(nos), fock_cooo0.T, zs_co) * np.sqrt(2 * s / (2 * s - 1))
         v1mo_oo += lib.einsum('ut,jv,xjv->xut', np.eye(nos), fock_cooo1.T, zs_co) / np.sqrt(2 * s * (2 * s - 1))
-        v1mo_oo -= lib.einsum('ut,jb,xjb->xut', np.eye(nos), fock_cvoo.T, zs_cv) / s * np.sqrt((2 * s + 1) / (2 * s - 1))
+        v1mo_oo -= lib.einsum('ut,jb,xjb->xut', np.eye(nos), fock_cvoo.T, zs_cv) / \
+                              s * np.sqrt((2 * s + 1) / (2 * s - 1))
         v1mo_oo += lib.einsum('wu,tv,xwv->xut', np.eye(nos), fock_oooo0, zs_oo)
         v1mo_oo -= lib.einsum('tv,wu,xwv->xut', np.eye(nos), fock_oooo1, zs_oo)
         v1mo_oo += lib.einsum('uv,tb,xvb->xut', np.eye(nos), fock_ooov0, zs_ov) * np.sqrt(2 * s / (2 * s - 1))
